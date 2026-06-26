@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "PreToolUse": [
+    {
+      "matcher": "search_ai_news",
+      "command": "python3 .agents/scripts/validate_search.py",
+      "timeout": 10
+    },
+    {
+      "matcher": "write_digest_to_memory",
+      "command": "python3 .agents/scripts/validate_memory_write.py",
+      "timeout": 10
+    }
+  ]
+}

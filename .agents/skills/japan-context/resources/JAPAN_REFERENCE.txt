@@ -1,0 +1,131 @@
+# Japan AI Market Reference
+
+## Japan-committed AI companies
+(Companies with confirmed Japan office, partnership, or serious enterprise commitment)
+
+### Global AI labs with Japan presence
+- OpenAI — Tokyo office, SoftBank partnership
+- Anthropic — Japan office
+- Google DeepMind — Google Japan, strong enterprise presence
+- Microsoft — Azure Japan East/West, OpenAI reseller
+- Cohere — Enterprise push, Japan partnerships
+- AWS — Data centers in Tokyo and Osaka regions
+
+### Japan-headquartered AI builders
+- NTT — Tsuzumi model, telco + enterprise
+- Fujitsu — Kozuchi platform, enterprise AI
+- SoftBank — AI infrastructure, OpenAI partnership
+- Sony AI — Research, entertainment, robotics
+- Rakuten AI — E-commerce, fintech
+- LINE Yahoo Japan — Consumer AI, search
+- Preferred Networks — Robotics AI, manufacturing
+- Sakana AI — Founded in Tokyo, frontier research
+- Ricoh AI — Document intelligence
+- Hitachi — Industrial AI, social infrastructure
+
+## Japan's key enterprise verticals
+
+### Manufacturing & robotics (strongest vertical)
+Key players: Toyota, Honda, Fanuc, Kawasaki, Yaskawa, Keyence
+AI opportunity: Predictive maintenance, quality inspection, robotic process
+automation, supply chain optimisation
+Adoption pace: FAST — already investing heavily in factory automation
+
+### Financial services & insurance (large but conservative)
+Key players: Nomura, SMBC, MUFG, Mizuho, Tokio Marine, Dai-ichi Life
+AI opportunity: Document processing, fraud detection, customer service,
+risk analysis
+Adoption pace: SLOW — strict FSA regulations, data privacy concerns
+Signal: FSA guidelines update = immediate adoption trigger
+
+### Retail & convenience (massive scale)
+Key players: Seven & i (7-Eleven), AEON, FamilyMart, Lawson, Rakuten
+AI opportunity: Demand forecasting, personalisation, inventory optimisation,
+customer service automation
+Adoption pace: MEDIUM — convenience store chains are early movers
+
+### Healthcare & aging population (most urgent societal need)
+Key players: Government hospitals, Eisai, Takeda, Terumo
+AI opportunity: Elderly care automation, diagnostic support, drug discovery,
+nursing shortage solutions
+Adoption pace: SLOW — PMDA approval required, privacy concerns
+Gem signal: Any AI for elderly care or nursing automation = Japan-specific gem
+
+### Public sector & local government
+Key players: Digital Agency (Degicho), 1,700+ municipalities
+AI opportunity: Document digitisation, citizen services, administrative
+automation (Japan still uses fax machines widely)
+Adoption pace: ACCELERATING — Degicho mandate driving change
+Signal: Degicho announcements = gem, affects 1,700 municipalities
+
+### Telco & infrastructure
+Key players: NTT, SoftBank, KDDI, Rakuten Mobile
+AI opportunity: Network optimisation, customer service, B2B AI services
+Adoption pace: FAST — telcos are building AI businesses, not just using AI
+
+## Japan policy landscape
+
+### Key bodies
+- METI (Ministry of Economy, Trade and Industry) — industrial AI policy
+- AI Strategy Council — cross-ministry AI governance
+- Digital Agency (Degicho) — public sector digitisation
+- FSA — financial services AI regulation
+- PMDA — medical device and AI approval
+
+### Current priorities (as of mid-2026)
+- "AI Nippon" initiative — sovereign AI development
+- Domestic LLM capability building (NTT Tsuzumi, Fujitsu Kozuchi)
+- Data residency and sovereignty framework
+- AI safety guidelines aligned with international frameworks
+- Semiconductor supply chain (Rapidus, TSMC Kumamoto)
+
+### Policy signal interpretation
+- METI directive = 12-24 month product demand formation
+- FSA guideline update = immediate unlock for financial AI products
+- Degicho announcement = affects all 1,700 municipalities
+- Keidanren position paper = consensus forming in enterprise
+
+## Japan adoption dynamics
+
+### Why adoption is slow
+- Ringi (稟議) consensus decision-making — all stakeholders must approve
+- Lifetime employment norms — AI threatens jobs, creates resistance
+- Risk aversion culture — prefer proven solutions over pioneering
+- Language barrier — English-first AI tools miss the Japanese enterprise
+- Vendor lock-in concerns — prefer in-house or partner solutions
+- Data privacy strictness — even within organisations
+
+### Why adoption is accelerating
+- Severe labour shortage — AI is a workforce necessity, not a nice-to-have
+- Government mandate — explicit government push removes political risk
+- Proven global case studies — Japan enterprises follow once others have proven
+- Major infrastructure investment — AWS, Azure, Google removing data residency objections
+- Local model availability — NTT, Fujitsu, SoftBank removing language barriers
+
+### The 12-18 month lag rule
+Global AI use case deployment → Japan enterprise awareness: ~6 months
+Japan enterprise awareness → pilot: ~6-12 months
+Japan enterprise pilot → production: ~6-12 months
+Total: 18-36 months from global proof to Japan production
+
+Exception: Government-mandated use cases (faster)
+Exception: Labour-shortage-driven use cases (faster)
+Exception: Use cases where Japanese vendor leads globally (skip lag)
+
+## Japan AI infrastructure status (mid-2026)
+
+### Compute
+- AWS Tokyo + Osaka: Redundant AI-optimised infrastructure, data residency compliant
+- Azure Japan: Strong enterprise customer base, OpenAI integration
+- Google Cloud Japan: Growing, Vertex AI available
+- Rapidus: Next-generation semiconductor fab, targeting 2027 production
+- TSMC Kumamoto: First fab operational, expanding to second
+
+### Connectivity
+- Sub-1ms latency to major Asia-Pacific markets
+- Strong edge computing infrastructure (NTT, SoftBank)
+- 5G coverage: Near-complete in urban areas
+
+### Data centres
+- Major expansion underway 2025-2027
+- Power constraint is the main bottleneck — renewable energy push
