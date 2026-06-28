@@ -12,16 +12,16 @@ Existing tools answer "what happened?" I need "so what for my product decisions 
 
 ## What I Built
 
-A three-mode agent built on the Agent Development Kit (ADK) that delivers a scheduled daily AI news digest, alerts on breaking events, and handles on-demand queries—all filtered through a Japan PM lens.
+A three-mode agent built on the Agent Development Kit (ADK) that delivers a scheduled daily AI news digest, alerts on breaking events, and handles on-demand queries—all delivered via the Telegram bot called **AI PM Signal Tracker**.
 
 The three-mode design is tightly integrated: the scheduled digest filters and logs daily insights, the background monitor flags high-urgency breaking news, and the on-demand query mode lets users query this accumulated historical memory to answer retrospective questions like "how has OpenAI's Japan strategy shifted this month?" The tool gets smarter and more valuable over time.
 
 Every news item is classified into one of six strategic categories, scored 1–5 on Japan strategic relevance (gem score), and output with an explicit Japan angle and strategic signal.
 
 **Three Operating Modes:**
-1. **`digest`** (daily at 9am JST) — Aggregates and translates the last 24h AI news into a single structured HTML message for Telegram and the console.
+1. **`digest`** (daily at 9am JST) — Aggregates and translates the last 24h AI news into a single structured HTML message sent to the **AI PM Signal Tracker** Telegram bot.
 2. **`monitor`** (every 3h background scan) — Evaluates recent news and triggers a proactive alert *only* if a highly critical, market-shifting breaking event (`breaking=True`) is discovered.
-3. **`query`** (on-demand Q&A) — Answers natural language user queries directly by retrieving historical context from memory and executing a clean, time-limit-free general web search.
+3. **`query`** (on-demand Q&A) — Answers natural language user queries directly in Telegram by retrieving historical context from memory and executing a clean, time-limit-free general web search.
 
 **Six signal categories:**
 - **Policy & sovereignty** — METI directives and government moves.
@@ -64,5 +64,6 @@ Four design decisions reflect real PM work in Japan that a generic agent would m
 * **Structured State & Workflows:** Built a conditional routing DAG utilizing specialized agents for classification, routing, and formatting.
 * **Persistent Memory:** Utilized file-based memory to store daily digests, allowing the Q&A agent to retrieve past context across sessions.
 * **Progressive Disclosure:** Incorporated dynamic context loading (Japan reference skills) only when processing signals to keep the LLM focused.
-* **Security & PII Gates:** Implemented pre-execution filters to block prompt injections and private info before search queries execute.
+* **Security & Data Leakage Prevention (DLP):** Implemented pre-execution filters (hooks) that scan queries for corporate PII (such as employee emails or proprietary domains) before they are sent to external search APIs, preventing accidental data leaks.
 * **Rigorous Evaluation:** Used a local unit testing suite paired with an LLM-as-a-judge dataset of 12 custom scenarios to ensure quality across modes.
+* **Self-Healing Python Nodes:** Replaced brittle HITL (Human-in-the-loop) prompts with programmatically assisted LLM decision-making that validates and heals links automatically.
