@@ -58,11 +58,19 @@ Four design decisions reflect real PM work in Japan that a generic agent would m
 
 ---
 
-## How It Works (Course Concepts Applied)
+## Course Concepts Applied
 
-* **State & Workflow Orchestration:** Uses ADK 2.0 conditional routing to orchestrate distinct classification, formatting, and retrieval steps based on user triggers.
-* **Persistent Memory:** Persists structured digests in long-term memory so Q&A queries can perform retrospective analysis over past weeks.
-* **Asynchronous Pub/Sub Integration:** Connects the Telegram interface with the FastAPI server asynchronously using Pub/Sub message envelopes.
-* **Hybrid Security Model:** Combines ADK's pre-execution hook scripts (interrogating LLM tool calls) with direct Python-level validation filters inside our on-demand query node. This ensures prompt injections and PII leaks are blocked across both agent-driven and code-driven search paths.
-* **Bilingual Search & Self-Healing Links:** Aggregates Japanese and English searches, deduplicates identical news coverage, and programmatically verifies and repairs URL links in Python.
-* **Rigorous Domain Grading:** Grades the agent using unit tests and an LLM-as-a-judge dataset representing realistic PM scenarios.
+* **State & Workflow DAGs (ADK 2.0):** Built a multi-mode conditional routing workflow using ADK 2.0 context state and routing rules.
+* **Persistent Memory (Day 3):** Deployed a file-based storage layer to persist structured digests, enabling cross-session retrieval and Q&A memory context lookup.
+* **Progressive Disclosure via Agent Skills (Day 3):** Packaged Japan-specific policy and vertical rules as a dynamic Agent Skill, preventing context window rot during processing.
+* **Security Hook Gates (Day 4):** Configured `hooks.json` pre-execution script hooks to validate search inputs and abort unsafe API tool calls.
+* **LLM-as-a-Judge Evaluation (Day 4):** Created a 12-case evaluation dataset and judge instructions to grade the agent on taxonomy classification and security.
+
+---
+
+## Technical Features & Optimizations
+
+* **Asynchronous Pub/Sub Integration:** Connected the Telegram interface asynchronously to the FastAPI backend using Pub/Sub message envelopes.
+* **Bilingual Title Deduplication:** Wrote a similarity keyword scanner in Python to filter out duplicate news stories across English and Japanese sources before classification.
+* **Self-Healing URL Resolver:** Programmed a Python validation layer that maps headlines back to search results using weighted entity overlaps, automatically correcting LLM URL hallucinations before delivery.
+* **Hybrid Security Model:** Combined ADK's pre-execution hook scripts (which scan LLM tool calls) with direct Python-level safety validation checks in custom nodes to block prompt injections and PII query leaks across all code paths.
