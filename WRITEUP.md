@@ -25,14 +25,6 @@ Every news item is classified into one of six strategic categories, scored 1–5
 2. **`monitor`** (every 3h background scan) — Evaluates recent news and triggers a proactive alert *only* if a highly critical, market-shifting breaking event (`breaking=True`) is discovered.
 3. **`query`** (on-demand Q&A) — Answers natural language user queries directly in Telegram by retrieving historical context from memory and executing a clean, time-limit-free general web search.
 
-**Six signal categories:**
-- **Policy & sovereignty** — METI directives and government moves.
-- **Model & capability release** — new model launches and benchmark jumps.
-- **Infrastructure & compute** — cloud, chips, data centers.
-- **Enterprise adoption** — who is deploying AI and with what outcome.
-- **Competitive moves** — M&A, partnerships, strategic shifts.
-- **Research & disruptor radar** — papers filtered by product implication, not technical merit.
-
 ---
 
 ## Why Telegram?
@@ -47,7 +39,7 @@ We chose Telegram as our primary delivery channel for two reasons:
 
 * **100% Trusted Links:** The self-healing URL resolver prevents LLM link hallucinations, meaning PMs can click news sources with complete confidence.
 * **No Redundant Reading:** The title deduplicator filters out duplicate news coverage across feeds, ensuring PMs only review unique signals instead of reading the same story three times.
-* **Retrospective Search:** Because memory persists across sessions, the Telegram bot acts as a searchable intelligence database of Japan's AI signal history over time, not just a temporary alert feed.
+* **Retrospective Search:** Because memory persists across sessions, the Telegram bot acts as a searchable database of Japan's AI signal history over time, not just a temporary alert feed.
 * **Privacy Guardrails:** The pre-execution search filters block prompt injections and corporate PII from leaking to external search engine APIs.
 
 ---
@@ -66,24 +58,11 @@ Four design decisions reflect real PM work in Japan that a generic agent would m
 
 ---
 
-## Architectural Choices
+## How It Works (Course Concepts Applied)
 
-**Separation of Concerns (Classifier vs. Formatters).** We split the classification engine from the output formatters. The classifier runs at temperature 0 for strict, deterministic analysis and scoring, while the formatters run at temperature 0.2 to generate natural summaries without hallucinating facts.
-
-**Bilingual Title-Similarity Deduplication.** The search phase runs 8 queries concurrently and filters them through a Python title-similarity check. If an article overlaps with a previously seen story, it is discarded. This keeps the feed clean, eliminates duplicate signal generation, and reduces context window costs.
-
-**Self-Healing URL Resolver.** To prevent the agent from delivering broken or hallucinated links, a Python validation layer scores headlines against search results (weighing proper nouns and numbers heavily). If the LLM assigns a wrong ID, Python overrides it and self-heals the link to the correct URL before delivery.
-
-**Clean Q&A Web Search.** Q&A mode strips conversational query filler in Python, bypasses Google News limits, and executes a general web search without time limits, guaranteeing highly relevant result pages for startup queries or general concepts.
-
----
-
-## Course Concepts Applied
-
-* **State & Workflow Orchestration:** Built a conditional routing DAG using the ADK 2.0 framework, leveraging context state transitions to orchestrate specialized classification and formatting agents.
-* **Persistent Long-Term Memory:** Utilized file-based memory stores to persist structured daily digests, enabling cross-session query retrieval and retrospective analysis.
-* **Progressive Disclosure:** Applied ADK Agent Skills to dynamically load Japanese market context only when processing signals, optimizing prompt efficiency.
-* **Asynchronous Pub/Sub Integration:** Connected the user-facing Telegram bot asynchronously with the FastAPI application server using Pub/Sub message envelopes.
-* **Security & Execution Gates:** Deployed pre-execution script hooks (`hooks.json`) to validate queries and block prompt injections and private identifiers before they reach public search engine APIs.
-* **Deterministic Code Validation:** Interleaved LLM nodes with programmatic Python nodes to verify, deduplicate, and self-heals outputs (like source URL mappings) directly in code.
-* **Rigorous Evaluation Metrics:** Created a local unit test suite and a 12-case LLM-as-a-judge dataset to grade the agent on domain classification and safety.
+* **State & Workflow Orchestration:** Uses ADK 2.0 conditional routing to orchestrate distinct classification, formatting, and retrieval steps based on user triggers.
+* **Persistent Memory:** Persists structured digests in long-term memory so Q&A queries can perform retrospective analysis over past weeks.
+* **Asynchronous Pub/Sub Integration:** Connects the Telegram interface with the FastAPI server asynchronously using Pub/Sub message envelopes.
+* **Pre-Execution Security Hooks:** Blocks prompt injections and personal identifiers in queries before they are sent to third-party search APIs.
+* **Bilingual Search & Self-Healing Links:** Aggregates Japanese and English searches, deduplicates identical news coverage, and programmatically verifies and repairs URL links in Python.
+* **Rigorous Domain Grading:** Grades the agent using unit tests and an LLM-as-a-judge dataset representing realistic PM scenarios.
