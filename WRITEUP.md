@@ -41,7 +41,7 @@ While Slack and Line dominate internal corporate chat in Japan, we selected Tele
 
 * **100% Trusted Links:** The self-healing URL resolver prevents LLM link hallucinations, meaning PMs can click news sources with complete confidence.
 * **No Redundant Reading:** The title deduplicator filters out duplicate news coverage across feeds, ensuring PMs only review unique signals instead of reading the same story three times.
-* **Retrospective Analysis:** Because memory persists across sessions, PMs preparing competitive analysis decks or METI funding proposals can query the bot (e.g., "Sakana AI Fugu releases") to instantly retrieve an aggregated timeline of past events.
+* **Retrospective Context:** Because daily digests persist in memory, on-demand queries combine live web searches with historical memory logs. This allows PMs to cross-reference fresh news with past signals (e.g., matching a new announcement against past local initiatives saved in memory).
 * **Privacy Guardrails:** The pre-execution search filters block prompt injections and corporate PII from leaking to external search engine APIs.
 
 ---
