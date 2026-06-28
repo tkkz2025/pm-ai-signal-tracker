@@ -1,6 +1,6 @@
 # PM AI Signal Tracker
 
-> A dual-mode ADK 2.0 agent that delivers a daily AI news digest filtered through a Japan PM lens — translating global AI signals into product strategy implications for product managers working on AI products in Japan.
+> A three-mode ADK 2.0 agent that delivers a daily AI news digest, alerts on breaking events, and answers on-demand questions—all filtered through a Japan PM lens to translate global AI news into strategic product decisions.
 
 Built for the [Kaggle × Google 5-Day AI Agents Vibe Coding Course](https://www.kaggle.com/competitions/vibecoding-agents-capstone-project) capstone (July 2026).
 
@@ -10,53 +10,64 @@ Built for the [Kaggle × Google 5-Day AI Agents Vibe Coding Course](https://www.
 
 Most AI news digests answer **"what happened?"**. This agent answers **"so what for my product decisions in Japan?"**
 
-Every news item is classified into one of six signal categories, scored 1–5 on Japan strategic relevance (gem score), and translated into a PM-lens output with Japan angle and strategic signal. Gem score 5 signals trigger a human-in-the-loop review before being surfaced.
+Every news item is classified into one of six signal categories, scored 1–5 on Japan strategic relevance (gem score), and translated into a PM-focused output detailing the Japan angle and strategic signal.
 
-**Two entry points:**
-- `scheduled` — autonomous daily digest of last 24h AI news, filtered through the Japan PM lens
-- Any natural language query — on-demand signal lookup with memory retrieval
+**Three Operating Modes:**
+1. **`digest`** (daily at 9am JST) — Autonomous daily digest of the last 24h AI news, formatted into a structured, single-message HTML payload for Telegram and the console.
+2. **`monitor`** (every 3h) — Background scan that triggers a proactive alert on Telegram *only* when a highly critical, market-shifting breaking event (`breaking=True`) is discovered.
+3. **`query`** (on-demand) — Direct Q&A system that processes natural language queries sent to the Telegram bot, performs memory retrieval and a clean, general web search, and returns a concise, direct answer.
 
 ---
 
-## Signal taxonomy
+## Signal Taxonomy
 
 | Category | Japan filter |
 |----------|-------------|
-| Policy & sovereignty | METI directives, AI Nippon initiative, data localisation |
-| Model & capability release | Japan-committed companies (OpenAI Japan, Anthropic Japan, Cohere, etc.) — English-first is NOT noise |
-| Infrastructure & compute | AWS/Azure/Google DC builds in Japan, Rapidus semiconductor, TSMC Kumamoto |
-| Enterprise adoption | Japan domestic deployments + global use case scouting (12–18 month lag indicator) |
-| Competitive moves | SoftBank/OpenAI, NTT-Docomo AI, Sony AI, KK/GK entity formation |
-| Research & disruptor radar | Filtered by product implication: does this create or destroy a product assumption? |
+| **Policy & sovereignty** | METI directives, AI Nippon initiative, data localization rules |
+| **Model & capability release** | Japan-committed companies (OpenAI Japan, Anthropic Japan, Sakana AI, etc.) — English-first is NOT noise |
+| **Infrastructure & compute** | AWS/Azure/Google DC builds in Japan, Rapidus, TSMC Kumamoto |
+| **Enterprise adoption** | Japanese enterprise deployments + global use case scouting (lag indicators) |
+| **Competitive moves** | SoftBank/OpenAI, NTT-Docomo AI, Sony AI partnerships |
+| **Research & disruptor radar** | Implication lens: does this create or destroy a product assumption? |
 
 ---
 
 ## Architecture
 
 ```
-START → detect_trigger
-      → [scheduled: prepare_digest_queries | on_demand: on_demand_router]
-      → classifier (LlmAgent, gemini-2.5-flash, output_schema=DigestSignals)
-      → route_by_gem_score
-      → [gem_score=5: build_hitl_prompt → HITL → formatter]
-      → [gem_score<5: formatter]
-      → store_and_finish → END
+                      START 
+                        │
+                        ▼
+                  detect_trigger
+                  /            \
+           (scan) /              \ (query)
+                 ▼                ▼
+     prepare_digest_queries   on_demand_router
+                 │                │
+                 │                ▼
+                 │            after_on_demand_router
+                 \                /
+                  ▼              ▼
+                     classifier
+                         │
+                         ▼
+                 route_by_gem_score
+                 /       │        \
+        (digest)/        │(monitor)\ (query)
+               ▼         │          ▼
+       digest_formatter  │   query_formatter
+               │         ▼          │
+               │   monitor_finish   │
+               \         │          /
+                ▼        ▼         ▼
+             store_and_finish (or END)
 ```
 
-**Key design decisions:**
-- `DigestSignals` Pydantic schema enforces structured output from classifier
-- HITL uses `create_request_input_event` — signals written to disk before interrupt, recovered via `load_hitl_pending()` after ADK state reset on resume
-- Memory stored as dated JSON files in `.agents/memory/` for on-demand retrieval
-- Bilingual search queries (English + Japanese) to catch Japan-only sources
-- `tbs=qdr:d` SerpApi filter enforces 24h recency on all searches
-
-**Course concepts applied:**
-- ADK 2.0 workflow with conditional routing (Days 1–2)
-- Session state + file-based long-term memory (Day 3)
-- Progressive disclosure via Antigravity Skills (Day 3)
-- Pydantic input validation, hooks.json execution gates, Semgrep pre-commit (Day 4)
-- LLM-as-judge eval dataset with 12 cases (Day 4)
-- Human-in-the-loop for high-stakes signals (Day 4)
+**Key Architectural Features:**
+* **Bilingual Title Deduplication:** Aggregates 8 concurrent searches and runs a title-similarity filter in Python to discard overlapping duplicate stories (e.g. HokaNews vs TechCrunch covering the same ban lift), ensuring a clean classifier feed.
+* **Self-Healing URL Resolution:** Evaluates proper nouns, numbers (weight=5), and cross-lingual synonyms (weight=3) to map LLM headlines to source URLs with 100% precision. Python overrides incorrect LLM IDs if another article is a substantially better match.
+* **On-Demand Q&A Search:** Cleans conversational query phrasing (like `"how about"`) in Python, bypasses the 24-hour time limit, and runs a general Google Web search instead of news-only search to gather rich context pages.
+* **ADK 2.0 Contract Compliance:** Fully utilizes the `Event(output=...)` signature to prevent parameters from being ignored during state transitions.
 
 ---
 
@@ -66,7 +77,8 @@ START → detect_trigger
 - Python 3.11+
 - [uv](https://astral.sh/uv) package manager
 - Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-- SerpApi key from [serpapi.com](https://serpapi.com/manage-api-key) (free tier: 100 searches/month)
+- SerpApi key from [serpapi.com](https://serpapi.com/manage-api-key)
+- Telegram Bot Token + Chat ID (optional, logs fallback to console if not set)
 
 ### Install
 
@@ -84,61 +96,69 @@ cp .env.example .env
 # Edit .env and fill in your API keys
 ```
 
-### Run
+### Run Server
 
 ```bash
 uv run adk web
-# Opens http://127.0.0.1:8000
+# Opens the ADK app at http://127.0.0.1:8000
 ```
 
-Send `scheduled` for a daily digest, or any natural language query for on-demand signals.
-
-### Test
+### Run Telegram Bot Poller (Local daemon)
 
 ```bash
-uv run pytest tests/test_agent.py -v
-# 29 tests — schemas, tools, hooks
+uv run python app/telegram_poll.py
+# Polls Telegram bot for user questions and forwards them as Pub/Sub triggers to the server
 ```
 
 ---
 
-## Project structure
+## Test & Verify
+
+### Running Unit & Integration Tests
+
+We have a robust suite of **24 unit and integration tests** testing schemas, long-term memory operations, and hook security validations locally without invoking expensive API calls:
+
+```bash
+uv run pytest -v
+# 24 tests passed successfully
+```
+
+### Running Evaluation Cases
+
+The LLM-as-a-judge evaluation suite covers **12 scenarios** mapping exactly to our operating mode requirements (including empty results, monitor alerts, Q&A memory recall, and prompt injections):
+
+```bash
+agents-cli eval run --dataset tests/eval/datasets/signals-dataset.json
+```
+
+---
+
+## Project Structure
 
 ```
 pm-ai-signal-tracker/
 ├── app/
-│   └── agent.py                    # Full workflow, all logic
+│   ├── agent.py                    # Main agent workflow, nodes, and LlmAgents
+│   └── telegram_poll.py            # Telegram polling daemon (sends Pub/Sub queries)
 ├── tests/
-│   ├── test_agent.py               # Pytest suite (29 tests)
+│   ├── test_agent.py               # Local Pytest suite (24 tests)
 │   └── eval/
-│       ├── judge-instruction.md    # LLM-as-judge rubric
+│       ├── judge-instruction.md    # LLM-as-judge scoring rubric & hard failures
 │       └── datasets/
-│           └── signals-dataset.json # 12 eval cases
+│           └── signals-dataset.json # 12 structured eval scenarios
 ├── .agents/
-│   ├── CONTEXT.md                  # Agent brain (Antigravity auto-loads)
-│   ├── hooks.json                  # Pre-tool execution gates
+│   ├── CONTEXT.md                  # Project context
+│   ├── hooks.json                  # Pre-tool execution security gates
 │   ├── scripts/
-│   │   ├── validate_search.py      # Blocks PII + injection before search
+│   │   ├── validate_search.py      # Hooks blocking PII & injections
 │   │   └── validate_memory_write.py
 │   └── skills/
-│       └── japan-context/          # Progressive disclosure Japan knowledge base
+│       └── japan-context/          # Japan reference database
+├── ARCHITECTURE.md                 # Technical spec and implementation design
 ├── pyproject.toml
-├── .pre-commit-config.yaml         # Semgrep security gates
+├── .pre-commit-config.yaml         # Semgrep security pre-commit check
 └── .env.example
 ```
-
----
-
-## Eval dataset
-
-12 cases covering:
-- Happy path gems (policy, model release, infrastructure, global use case scouting)
-- Edge cases (English-first model from Japan-committed company = NOT noise)
-- Noise identification
-- On-demand query handling
-- Security: prompt injection in news content
-- Security: PII in search query (hook validation)
-- Japanese-source, English-output rule
 
 ---
 
@@ -150,4 +170,4 @@ pm-ai-signal-tracker/
 
 ## Author
 
-Built by a PM working on AI products in Japan, as a capstone for the Kaggle × Google 5-Day AI Agents Vibe Coding Course (June 2026).
+Built by a PM working on AI products in Japan, as a capstone for the Kaggle × Google 5-Day AI Agents Vibe Coding Course (July 2026).

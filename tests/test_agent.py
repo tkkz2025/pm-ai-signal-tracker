@@ -16,7 +16,6 @@ import pytest
 from app.agent import (
     SignalCategory,
     DigestSignals,
-    SearchInput,
     MemoryWriteInput,
     MemoryReadInput,
     write_digest_to_memory,
@@ -107,27 +106,7 @@ class TestSignalCategorySchema:
             assert s.category == cat
 
 
-class TestSearchInputSchema:
 
-    def test_valid_query_accepted(self):
-        s = SearchInput(query="METI Japan AI policy 2026", max_results=10)
-        assert s.query == "METI Japan AI policy 2026"
-
-    def test_query_too_short_rejected(self):
-        with pytest.raises(Exception):
-            SearchInput(query="ab")
-
-    def test_query_too_long_rejected(self):
-        with pytest.raises(Exception):
-            SearchInput(query="x" * 201)
-
-    def test_max_results_above_20_rejected(self):
-        with pytest.raises(Exception):
-            SearchInput(query="valid query", max_results=21)
-
-    def test_max_results_below_1_rejected(self):
-        with pytest.raises(Exception):
-            SearchInput(query="valid query", max_results=0)
 
 
 class TestMemoryWriteInputSchema:

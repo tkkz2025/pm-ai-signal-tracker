@@ -1,25 +1,38 @@
 """
 PM AI Signal Tracker
 ====================
-Monitors global AI news daily and surfaces strategic signals
-for product managers working on AI products in Japan.
+Monitors global AI news and surfaces strategic signals for PMs working on AI
+products in Japan. Three operating modes delivered via Pub/Sub:
 
-Two entry points:
-  1. Scheduled digest  — autonomous daily run, fetches last 24h AI news
-  2. On-demand query   — user asks a question, retrieves from memory + live search
+  digest  — full daily digest at 9am → Telegram
+  monitor — background scan every 3h → Telegram only if breaking signal found
+  query   — on-demand Q&A from Telegram bot → brief answer to Telegram
 
 Workflow:
-  START → detect_trigger → [scheduled: prepare_digest_queries | on_demand: on_demand_router]
-        → classifier (LlmAgent) → route_by_gem_score
-        → [gem5: build_hitl_prompt → human_review | other: formatter]
-        → formatter → store_and_finish → END
+  START → detect_trigger
+      → scan (digest/monitor): prepare_digest_queries → classifier → route_by_gem_score
+      → query:                 on_demand_router → after_on_demand_router
+                               → classifier → route_by_gem_score
+
+  route_by_gem_score (reads delivery_mode):
+      → digest:  digest_formatter → store_and_finish → END
+      → monitor: monitor_finish → END
+      → query:   query_formatter → store_and_finish → END
+
+URL Design:
+  Articles are formatted with [N] IDs. Classifier outputs article_id: N.
+  route_by_gem_score looks up url_lookup[str(N)] → real URL from SerpApi.
+  The LLM never constructs or outputs URLs — Python owns URL assignment.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
+import html
 import json
 import os
+import re
 from typing import Any, Literal
 
 import requests
@@ -27,9 +40,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.events.event import Event
-from google.adk.events.request_input import RequestInput
 from google.adk.workflow import Workflow, node
-from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from pydantic import BaseModel, Field
 
 
@@ -38,8 +49,6 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 class SignalCategory(BaseModel):
-    """Structured output for a single classified news signal."""
-
     category: Literal[
         "policy_sovereignty",
         "model_capability_release",
@@ -47,221 +56,281 @@ class SignalCategory(BaseModel):
         "enterprise_adoption",
         "competitive_moves",
         "research_disruptor_radar",
-    ] = Field(description="The signal taxonomy category this news item belongs to.")
-
-    gem_score: int = Field(
-        ge=1,
-        le=5,
+    ]
+    gem_score: int = Field(ge=1, le=5)
+    headline: str = Field(description="One sentence summary in English.")
+    so_what: str = Field(description="One sentence why a PM should care.")
+    japan_angle: str = Field(description="One sentence Japan-specific implication.")
+    strategic_signal: str = Field(description="One sentence what to watch next.")
+    breaking: bool = Field(
+        default=False,
         description=(
-            "Strategic relevance score for a PM working on AI products in Japan. "
-            "5=immediate strategic relevance, 1=noise with no Japan implication."
+            "True ONLY if gem_score=5 AND published last 2 hours AND market-shifting event. "
+            "Never set breaking=True on a signal below gem_score=5."
         ),
     )
-
-    headline: str = Field(
-        description="One sentence summary of what happened. Plain English only."
-    )
-
-    so_what: str = Field(
-        description="One sentence explaining why a product manager should care."
-    )
-
-    japan_angle: str = Field(
+    article_id: str = Field(
+        default="-1",
         description=(
-            "One to two sentences on the specific Japan implication. "
-            "For research_disruptor_radar, explain what product assumption this "
-            "challenges or what new use case it opens instead."
-        )
-    )
-
-    strategic_signal: str = Field(
-        description="One sentence on what to watch next as a result of this news."
-    )
-
-    source_url: str = Field(
-        default="",
-        description="URL of the primary source for this news item."
+            "The integer N from the [N] at the start of the source article, as a string. "
+            "Example: if article starts with '[7]', output '7'. "
+            "Output '-1' if you cannot identify the source article."
+        ),
     )
 
 
 class DigestSignals(BaseModel):
-    """
-    FIX for ISSUE 1: Wrapper schema so classifier can output a LIST of signals
-    in a single LlmAgent call, not just one signal.
-    """
     signals: list[SignalCategory] = Field(
-        description=(
-            "All classified signals from today's search results, "
-            "ordered by gem_score descending. Include every unique news item found. "
-            "Skip duplicates and pure marketing press releases."
-        )
+        description="All classified signals, ordered by gem_score descending. Max 15."
     )
-
-
-class SearchInput(BaseModel):
-    """Validated input for the web search tool."""
-
-    query: str = Field(
-        min_length=3,
-        max_length=200,
-        description="Search query string. No PII. No injection patterns.",
-    )
-    max_results: int = Field(default=10, ge=1, le=20)
 
 
 class MemoryWriteInput(BaseModel):
-    """Validated input for the memory write tool."""
-
-    date_key: str = Field(
-        description="ISO date string used as the storage key e.g. '2026-06-26'."
-    )
-    digest: str = Field(
-        min_length=2,
-        description="JSON-serialised DigestSignals to store.",
-    )
+    date_key: str
+    digest: str = Field(min_length=2)
 
 
 class MemoryReadInput(BaseModel):
-    """Validated input for the memory read tool."""
+    query: str
+    lookback_days: int = Field(default=7, ge=1, le=30)
 
-    query: str = Field(
-        description=(
-            "Natural language description of what the user is looking for. "
-            "e.g. 'signals from last Tuesday' or 'OpenAI Japan news this week'."
+
+# ---------------------------------------------------------------------------
+# Telegram helpers
+# ---------------------------------------------------------------------------
+
+def _telegram_post(text: str, label: str = "message") -> None:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        print(f"[Telegram] Credentials not set — skipping {label}.")
+        return
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text[:4096],
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
         )
-    )
-    lookback_days: int = Field(
-        default=7,
-        ge=1,
-        le=30,
-        description="How many days back to search in stored digests.",
-    )
+        resp.raise_for_status()
+        print(f"[Telegram] ✅ Sent {label}")
+    except Exception as e:
+        print(f"[Telegram] ❌ Failed to send {label}: {e}")
+
+
+def _esc(t: Any) -> str:
+    return html.escape(str(t or ""))
+
+
+def _extract_signals(classified: Any) -> list:
+    """Safely extract list of signals from dict, Pydantic model, or other formats."""
+    if not classified:
+        return []
+    if isinstance(classified, dict):
+        return classified.get("signals", [])
+    if hasattr(classified, "signals"):
+        sigs = classified.signals
+        if isinstance(sigs, list):
+            return [s.model_dump() if hasattr(s, "model_dump") else s for s in sigs]
+        return sigs
+    if hasattr(classified, "model_dump"):
+        return classified.model_dump().get("signals", [])
+    return []
+
+
+_CAT_EMOJI = {
+    "policy_sovereignty": "🏛️",
+    "model_capability_release": "🧠",
+    "infrastructure_compute": "🏗️",
+    "enterprise_adoption": "🏢",
+    "competitive_moves": "⚔️",
+    "research_disruptor_radar": "🔬",
+}
+
+
+def _build_digest_html(signals: list, run_date: str, executive_summary: str = "") -> str:
+    """Build Telegram-safe HTML digest. Single source of truth for console + Telegram."""
+    TIER_CAPS = {5: 2, 4: 3, 3: 3}
+    tiers: dict[int, list] = {5: [], 4: [], 3: [], 2: [], 1: []}
+    for s in signals:
+        if isinstance(s, dict):
+            score = s.get("gem_score", 1)
+            if score in tiers and len(tiers[score]) < TIER_CAPS.get(score, 3):
+                tiers[score].append(s)
+
+    lines = [f"📊 <b>PM AI Signal Tracker — {_esc(run_date)}</b>", ""]
+
+    if executive_summary:
+        lines += [_esc(executive_summary.strip()), ""]
+
+    tier_defs = [
+        (5, "🔴 <b>Must-Read (Gem 5)</b>", "No Gem 5 signals today."),
+        (4, "🟠 <b>Watch Closely (Gem 4)</b>", "No Gem 4 signals today."),
+        (3, "🟡 <b>On the Radar (Gem 3)</b>", "No Gem 3 signals today."),
+    ]
+
+    for score, label, empty_msg in tier_defs:
+        lines.append(label)
+        if tiers[score]:
+            for s in tiers[score]:
+                emoji = _CAT_EMOJI.get(s.get("category", ""), "•")
+                lines.append(f"{emoji} <b>{_esc(s.get('headline'))}</b>")
+                lines.append(f"🇯🇵 {_esc(s.get('japan_angle'))}")
+                if s.get("source_url"):
+                    lines.append(f"🔗 {_esc(s.get('source_url'))}")
+                lines.append("")
+        else:
+            lines.append(empty_msg)
+        lines.append("")
+
+    background = (tiers[2] + tiers[1])[:3]
+    lines.append("⚪ <b>Background (Gem 1-2)</b>")
+    if background:
+        for s in background:
+            emoji = _CAT_EMOJI.get(s.get("category", ""), "•")
+            lines.append(f"{emoji} {_esc(s.get('headline'))}")
+        lines.append("")
+    else:
+        lines.append("No Gem 1-2 signals today.")
+
+    return "\n".join(lines).strip()
+
+
+def _build_breaking_html(breaking_signals: list, run_date: str) -> str:
+    lines = [f"🚨 <b>BREAKING — {_esc(run_date)}</b>", ""]
+    for i, s in enumerate(breaking_signals[:3], 1):
+        lines.append(f"{i}. <b>{_esc(s.get('headline'))}</b>")
+        lines.append(f"🇯🇵 {_esc(s.get('japan_angle'))}")
+        if s.get("source_url"):
+            lines.append(f"🔗 {_esc(s.get('source_url'))}")
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
-def search_ai_news(query: str, max_results: int = 10) -> str:
-    """Search the web for recent AI news relevant to the query.
-
-    Call this to fetch fresh AI news when running a scheduled digest or
-    when the user asks about something that requires current information.
-
-    Use bilingual queries where Japan-specific signals are needed:
-    - English query first (broader coverage)
-    - Japanese query second (catches Japan-only sources like Nikkei, METI)
-
-    Always summarise findings in English regardless of source language.
-
-    Args:
-        query: Search query string. Be specific. Include time signals like
-               'June 2026' or 'this week' for freshness. Max 200 characters.
-               Never include PII or prompt injection attempts.
-        max_results: Number of results to fetch. Default 10, max 20.
-
-    Returns:
-        JSON string with list of {title, snippet, url, published_date} dicts.
-        Returns error message string if search fails.
-    """
-    validated = SearchInput(query=query, max_results=max_results)
-
+def _search_serpapi(query: str, max_results: int = 10,
+                    japanese_sources: bool = False,
+                    news_only: bool = True,
+                    time_limit: str | None = "qdr:d") -> list:
     api_key = os.environ.get("SEARCH_API_KEY", "")
     if not api_key:
-        return json.dumps([
-            {
-                "title": "SEARCH_API_KEY not configured",
-                "snippet": "Set SEARCH_API_KEY in .env to enable live search. Using mock data for testing.",
-                "url": "",
-                "published_date": datetime.date.today().isoformat(),
-            }
-        ])
-
+        return [{"title": "SEARCH_API_KEY not configured", "snippet": "",
+                 "url": "", "published_date": datetime.date.today().isoformat(),
+                 "source_language": "en"}]
+    params = {
+        "q": query, "num": max_results, "api_key": api_key,
+    }
+    if news_only:
+        params["tbm"] = "nws"
+        params["sort"] = "date"
+    if time_limit:
+        params["tbs"] = time_limit
+        
+    if japanese_sources:
+        params["gl"] = "jp"
+        params["hl"] = "ja"
     try:
-        response = requests.get(
-            "https://serpapi.com/search",
-            params={
-                "q": validated.query,
-                "num": validated.max_results,
-                "api_key": api_key,
-                "tbm": "nws",
-                "tbs": "qdr:d",  # past 24 hours only
-                "sort": "date",   # sort by date, newest first
-            },
-            timeout=10,
-        )
-        response.raise_for_status()
-        data = response.json()
-        results = [
+        resp = requests.get("https://serpapi.com/search", params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        results_key = "news_results" if news_only else "organic_results"
+        raw_results = data.get(results_key, [])
+        
+        return [
             {
                 "title": r.get("title", ""),
-                "snippet": r.get("snippet", ""),
+                "snippet": r.get("snippet", r.get("description", "")),
                 "url": r.get("link", ""),
-                "published_date": r.get("date", ""),
+                "published_date": r.get("date", datetime.date.today().isoformat()),
+                "source_language": "ja" if japanese_sources else "en",
             }
-            for r in data.get("news_results", [])
+            for r in raw_results
         ]
-        return json.dumps(results)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        print(f"[search] Error for '{query}': {e}")
+        return []
+
+
+def _format_articles_for_classifier(results: list) -> tuple[str, dict]:
+    """Format articles as numbered text for classifier, return (text, url_lookup).
+
+    Each article gets a unique [N] ID. url_lookup maps str(N) → real URL.
+    The classifier outputs article_id=N; Python resolves to real URL.
+    """
+    url_lookup = {}
+    lines = []
+    idx = 0
+    for r in results:
+        url = r.get("url", "")
+        title = r.get("title", "")
+        snippet = r.get("snippet", "")
+        lang = r.get("source_language", "en")
+        lang_note = " [JA]" if lang == "ja" else ""
+
+        url_lookup[str(idx)] = url
+        lines.append(
+            f"[{idx}]{lang_note} {title}\n"
+            f"    SNIPPET: {snippet}"
+        )
+        idx += 1
+
+    return "\n\n".join(lines), url_lookup
+
+
+def _is_recent(published_date: str, hours: int = 24) -> bool:
+    if not published_date:
+        return True
+    pd = published_date.lower()
+    if any(x in pd for x in ["minute", "hour", "just now"]):
+        return True
+    if "day" in pd:
+        try:
+            n = int(pd.split()[0])
+            return n * 24 <= hours
+        except Exception:
+            return True
+    return True
+
+
+def search_ai_news(query: str, max_results: int = 10,
+                   japanese_sources: bool = False) -> str:
+    """Search tool for on_demand_router. Returns JSON string of results."""
+    # Since Q&A mode is not limited to 24-hour news, perform a general search
+    results = _search_serpapi(query, max_results, japanese_sources, news_only=False, time_limit=None)
+    return json.dumps(results)
 
 
 def write_digest_to_memory(date_key: str, digest: str) -> str:
-    """Persist a completed digest to long-term memory for future retrieval.
-
-    Call this AFTER the classifier has produced classified signals.
-    Store the JSON-serialised DigestSignals, not the formatted markdown output.
-    Must be called once per digest run so on-demand queries can reference
-    past signals.
-
-    Args:
-        date_key: ISO date string e.g. '2026-06-26'. Used as the lookup key.
-        digest: JSON-serialised DigestSignals string. Must be valid JSON.
-
-    Returns:
-        Confirmation string with the date_key that was stored, or error message.
-    """
     validated = MemoryWriteInput(date_key=date_key, digest=digest)
-
     memory_dir = ".agents/memory"
     os.makedirs(memory_dir, exist_ok=True)
     path = os.path.join(memory_dir, f"{validated.date_key}.json")
-
     try:
-        json.loads(validated.digest)  # validate before storing
+        json.loads(validated.digest)
         with open(path, "w", encoding="utf-8") as f:
             f.write(validated.digest)
-        return f"Stored digest for {validated.date_key} at {path}."
+        return f"Stored digest for {validated.date_key}."
     except json.JSONDecodeError as e:
-        return f"Error: digest is not valid JSON — {e}"
+        return f"Error: not valid JSON — {e}"
     except OSError as e:
         return f"Error writing to memory: {e}"
 
 
 def read_digests_from_memory(query: str, lookback_days: int = 7) -> str:
-    """Retrieve past digests from long-term memory to answer on-demand queries.
-
-    Call this when the user asks about past signals, trends, or wants to
-    compare today's news to a previous period.
-
-    Args:
-        query: Natural language description of what to look for.
-               e.g. 'OpenAI Japan signals this week' or 'gem score 5 signals'.
-        lookback_days: How many days back to search. Default 7, max 30.
-
-    Returns:
-        JSON string with list of matching DigestSignals objects from memory.
-        Returns empty list JSON if no matching digests found.
-    """
     validated = MemoryReadInput(query=query, lookback_days=lookback_days)
-
     memory_dir = ".agents/memory"
     if not os.path.exists(memory_dir):
         return json.dumps([])
-
     cutoff = datetime.date.today() - datetime.timedelta(days=validated.lookback_days)
     results = []
-
     try:
         for filename in sorted(os.listdir(memory_dir), reverse=True):
             if not filename.endswith(".json"):
@@ -273,277 +342,399 @@ def read_digests_from_memory(query: str, lookback_days: int = 7) -> str:
                 continue
             if file_date < cutoff:
                 continue
-            path = os.path.join(memory_dir, filename)
-            with open(path, "r", encoding="utf-8") as f:
+            with open(os.path.join(memory_dir, filename), "r", encoding="utf-8") as f:
                 results.append(json.load(f))
-
         return json.dumps(results)
     except OSError as e:
         return json.dumps({"error": str(e)})
 
 
 # ---------------------------------------------------------------------------
-# Function nodes
+# Python nodes
 # ---------------------------------------------------------------------------
 
 @node
 def detect_trigger(ctx: Context, node_input: Any):
-    """Detect whether this run is a scheduled digest or an on-demand query.
-
-    Writes 'trigger' and 'user_query' to ctx.state and routes accordingly.
-    Scheduled runs arrive with empty, 'scheduled', or 'run digest' input.
-    On-demand queries arrive with a natural language question string.
-
-    ADK may wrap the input as a dict, Content object, or plain string —
-    this node extracts the raw text regardless of wrapping.
-    """
-    # Extract plain text from whatever ADK passes in
+    """Parse delivery_mode from Pub/Sub payload. Routes: scan or query."""
     raw = node_input
-
-    # Handle Content objects (ADK web UI wraps messages this way)
-    if hasattr(raw, 'parts'):
-        parts = raw.parts or []
-        raw = " ".join(p.text for p in parts if hasattr(p, 'text') and p.text)
+    if hasattr(raw, "parts"):
+        raw = " ".join(p.text for p in (raw.parts or []) if hasattr(p, "text") and p.text)
     elif isinstance(raw, dict):
-        # Handle {'parts': [{'text': '...'}]} dict form
-        parts = raw.get('parts', [])
-        if parts:
-            raw = " ".join(
-                p.get('text', '') for p in parts if isinstance(p, dict)
-            )
-        else:
-            raw = raw.get('text', str(node_input))
+        parts = raw.get("parts", [])
+        raw = " ".join(p.get("text", "") for p in parts if isinstance(p, dict)) if parts \
+            else raw.get("text", str(node_input))
 
-    trigger_input = str(raw).strip().lower()
+    text = str(raw).strip()
 
-    is_scheduled = (
-        not trigger_input
-        or trigger_input == "scheduled"
-        or trigger_input == "run digest"
-        or trigger_input == "digest"
-    )
+    try:
+        payload = json.loads(text)
+        if "data" in payload and isinstance(payload["data"], dict):
+            payload = payload["data"]
+        trigger_word = payload.get("trigger", "").lower()
+        user_question = payload.get("question", "")
+    except (json.JSONDecodeError, AttributeError):
+        trigger_word = text.lower()
+        user_question = text
 
-    trigger = "scheduled" if is_scheduled else "on_demand"
+    if trigger_word in ("digest", "", "scheduled", "run digest"):
+        delivery_mode = "digest"
+        route = "scan"
+    elif trigger_word == "monitor":
+        delivery_mode = "monitor"
+        route = "scan"
+    else:
+        delivery_mode = "query"
+        route = "query"
+        if not user_question:
+            user_question = text
+
     yield Event(
-        data=raw,
-        state={"trigger": trigger, "user_query": str(raw)},
-        route=trigger,
+        output=raw,
+        state={
+            "delivery_mode": delivery_mode,
+            "user_query": user_question or text,
+            "run_date": datetime.date.today().isoformat(),
+        },
+        route=route,
     )
+
+
+def _deduplicate_articles(batches: list[list[dict]], hours: int = 24) -> list[dict]:
+    """Deduplicate similar articles across search batches using keyword overlap (bilingual)."""
+    seen_urls = set()
+    seen_titles = []
+    deduped = []
+    
+    IGNORE_WORDS = {
+        "japan", "japanese", "ai", "news", "policy", "government", "model",
+        "article", "report", "company", "tech", "system", "industry", "market",
+        "business", "introducing", "introduction", "introduce", "latest", "new"
+    }
+
+    def get_title_keywords(title: str) -> set[str]:
+        t = title.lower()
+        eng_words = set(re.findall(r'\b[a-z]{3,}\b', t))
+        # Support Japanese kanji/katakana deduplication
+        jp_words = set(re.findall(r'[\u4e00-\u9fff\u30a0-\u30ff]{2,}', t))
+        return (eng_words.union(jp_words)) - IGNORE_WORDS
+
+    for batch in batches:
+        for r in batch:
+            url = r.get("url", "")
+            title = r.get("title", "").strip()
+            if not url or not title:
+                continue
+            if url in seen_urls:
+                continue
+                
+            # Deduplicate by title keyword similarity (>55% overlap treated as duplicate)
+            title_words = get_title_keywords(title)
+            is_dup = False
+            for seen_words in seen_titles:
+                if len(title_words) > 0 and len(seen_words) > 0:
+                    overlap_ratio = len(title_words.intersection(seen_words)) / max(len(title_words), len(seen_words))
+                    if overlap_ratio > 0.55:
+                        is_dup = True
+                        break
+            if is_dup:
+                continue
+                
+            seen_urls.add(url)
+            seen_titles.append(title_words)
+            if _is_recent(r.get("published_date", ""), hours=hours):
+                deduped.append(r)
+                
+    return deduped
 
 
 @node
 def prepare_digest_queries(ctx: Context, node_input: Any):
-    """Prepare bilingual search queries for a scheduled digest run.
-
-    Generates English + Japanese query pairs per signal category for
-    broad source coverage. Stores queries in ctx.state['search_queries'].
-    """
-    today = datetime.date.today().isoformat()
-    month = today[:7]  # e.g. '2026-06'
-
-    queries = [
-        f"Japan AI policy METI government regulation {month}",
-        f"AI national strategy data sovereignty {month}",
-        f"new AI model release benchmark {month}",
-        f"OpenAI Anthropic Google AI Japan office {month}",
-        f"Japan data center AI compute infrastructure {month}",
-        f"Rapidus semiconductor TSMC Kumamoto AI {month}",
-        f"AI enterprise deployment manufacturing healthcare Japan {month}",
-        f"AI use case global manufacturing retail finance {month}",
-        f"AI company partnership acquisition Japan SoftBank NTT {month}",
-        f"AI research paper product implication use case {month}",
+    """Run 8 concurrent searches, deduplicate results, format with [N] IDs."""
+    search_specs = [
+        ("Japan AI policy METI government", False),
+        ("AI 政策 経済産業省 日本", True),
+        ("new AI model release Japan enterprise", False),
+        ("AI モデル 発表 日本 企業", True),
+        ("AI enterprise deployment Japan manufacturing", False),
+        ("AI 企業 導入 日本 製造業", True),
+        ("AI company Japan partnership SoftBank NTT Sakana", False),
+        ("AI research product disruption agent", False),
     ]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_search_serpapi, q, 10, jp) for q, jp in search_specs]
+        batches = []
+        for f in concurrent.futures.as_completed(futures, timeout=30):
+            try:
+                batches.append(f.result())
+            except Exception as e:
+                print(f"[search] Batch error: {e}")
+                batches.append([])
+
+    all_results = _deduplicate_articles(batches, hours=24)
+
+    en = sum(1 for r in all_results if r.get("source_language") == "en")
+    ja = sum(1 for r in all_results if r.get("source_language") == "ja")
+    print(f"[prepare_digest_queries] {len(all_results)} results ({ja} Japanese, {en} English)")
+
+    formatted_text, url_lookup = _format_articles_for_classifier(all_results)
 
     yield Event(
-        data=json.dumps(queries),  # pass as JSON string to classifier
-        state={"search_queries": queries, "run_date": today},
+        output=formatted_text,
+        state={
+            "raw_news": formatted_text,
+            "raw_news_json": json.dumps(all_results, ensure_ascii=False),
+            "url_lookup": json.dumps(url_lookup),
+        },
     )
 
 
-@node
-def route_by_gem_score(ctx: Context, node_input: Any):
-    """Route gem score 5 signals to human review; all others go to formatter.
-
-    FIX for ISSUE 2: classified_signals is stored by ADK as a dict
-    (Pydantic model serialised to dict via output_schema). Access signals
-    list from the DigestSignals wrapper dict.
-    """
-    classified = ctx.state.get("classified_signals", {})
-
-    # DigestSignals wrapper stores signals under 'signals' key
-    if isinstance(classified, dict):
-        signals_list = classified.get("signals", [])
-    else:
-        signals_list = []
-
-    has_gem_5 = any(
-        (s.get("gem_score", 0) if isinstance(s, dict) else 0) == 5
-        for s in signals_list
-    )
-
-    route = "human_review" if has_gem_5 else "format_output"
-    yield Event(data=node_input, state={"has_gem_5": has_gem_5}, route=route)
-
-
-@node
-def build_hitl_prompt(ctx: Context, node_input: Any):
-    """HITL node: pauses workflow and requests human confirmation for gem 5 signals.
-
-    Writes signals to a temp file BEFORE the interrupt so the formatter
-    can read them after ADK resets state on resume.
-    """
-    classified = ctx.state.get("classified_signals", {})
-    signals_list = classified.get("signals", []) if isinstance(classified, dict) else []
-
-    gem_5_signals = [
-        s for s in signals_list
-        if isinstance(s, dict) and s.get("gem_score", 0) == 5
+def _clean_query_for_search(query: str) -> str:
+    """Strip conversational phrasing and question marks to get clean search keywords."""
+    q = query.lower().strip()
+    q = re.sub(r'[?!\.\,\:\;\"]', '', q)
+    prefixes = [
+        "how about", "what about", "tell me about", "do you know about",
+        "can you tell me about", "what is", "who is", "information on",
+        "search for", "look up", "find news about"
     ]
-
-    signals_text = json.dumps(gem_5_signals, indent=2, ensure_ascii=False)
-
-    # Write ALL signals to temp file BEFORE yielding RequestInput
-    # This survives ADK state reset on resume
-    tmp_dir = ".agents/memory"
-    os.makedirs(tmp_dir, exist_ok=True)
-    tmp_path = os.path.join(tmp_dir, "_hitl_pending.json")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "classified_signals": classified,
-            "trigger": ctx.state.get("trigger", "on_demand"),
-            "run_date": ctx.state.get("run_date", datetime.date.today().isoformat()),
-        }, f, ensure_ascii=False)
-
-    message = (
-        "⚡ HIGH-PRIORITY SIGNAL DETECTED (Gem Score 5)\n\n"
-        f"{signals_text}\n\n"
-        "Include this in your digest? Reply: yes / no / edit"
-    )
-
-    yield create_request_input_event(RequestInput(message=message))
-
-    # After resume, re-load from file and restore state
-    try:
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-        yield Event(
-            data="hitl_approved",
-            state={
-                "hitl_confirmed": True,
-                "classified_signals": saved["classified_signals"],
-                "trigger": saved["trigger"],
-                "run_date": saved["run_date"],
-            },
-        )
-    except Exception as e:
-        yield Event(data="hitl_approved", state={"hitl_confirmed": True})
+    for p in prefixes:
+        if q.startswith(p):
+            q = q[len(p):].strip()
+    return q or query
 
 
 @node
 def after_on_demand_router(ctx: Context, node_input: Any):
-    """
-    FIX for ISSUE 5: LlmAgents cannot emit route= Events.
-    This @node bridges on_demand_router → classifier by:
-    1. Reading on_demand_router output from ctx.state['routed_query']
-    2. FIX for ISSUE 4: Normalising ctx.state key to 'search_queries'
-       so classifier instruction works identically on both paths.
-    """
+    """Run live search for the user's query, format with [N] IDs, store url_lookup."""
+    user_query = ctx.state.get("user_query", str(node_input))
     routed = ctx.state.get("routed_query", "")
-    today = datetime.date.today().isoformat()
 
-    # on_demand_router may have already called search tools and stored results.
-    # Store under search_queries so classifier instruction finds them consistently.
-    existing_results = ctx.state.get("search_results", [])
+    cleaned_query = _clean_query_for_search(user_query)
+    print(f"[on_demand] Searching live for: {cleaned_query}")
+    # Perform general web search with no time limit for Q&A
+    live_results = _search_serpapi(cleaned_query, max_results=10, japanese_sources=False, news_only=False, time_limit=None)
+
+    formatted_text, url_lookup = _format_articles_for_classifier(live_results)
+
+    # Include memory context as plain text (not numbered — no URL to attach)
+    combined = formatted_text
+    if routed:
+        combined = f"MEMORY CONTEXT (no URLs):\n{routed}\n\nLIVE SEARCH RESULTS:\n{formatted_text}"
 
     yield Event(
-        data=routed,
+        output=combined,
         state={
-            "search_queries": [],          # empty — on_demand_router already searched
-            "search_results": existing_results,
-            "run_date": today,
+            "raw_news": combined,
+            "raw_news_json": json.dumps(live_results, ensure_ascii=False),
+            "url_lookup": json.dumps(url_lookup),
         },
         route="to_classifier",
     )
 
 
 @node
-def store_and_finish(ctx: Context, node_input: Any):
-    """Store classified signals to memory and emit final response.
-
-    Before storing, deduplicates signals against yesterday's digest
-    so repeat stories don't appear in consecutive daily digests.
-    """
+def route_by_gem_score(ctx: Context, node_input: Any):
+    """Resolve article_id → real URL for all paths. Route by delivery_mode."""
     classified = ctx.state.get("classified_signals", {})
+    signals_list = _extract_signals(classified)
+    print(f"[route_by_gem_score] received {len(signals_list)} signals from classifier")
+
+    # Load url_lookup built by prepare_digest_queries or after_on_demand_router
+    url_lookup: dict = {}
+    try:
+        url_lookup = json.loads(ctx.state.get("url_lookup", "{}"))
+    except Exception:
+        pass
+
+    import re
+
+    # Load raw news articles to do keyword-based self-healing URL matching
+    articles = []
+    try:
+        articles = json.loads(ctx.state.get("raw_news_json", "[]"))
+    except Exception:
+        pass
+
+    resolved_signals = []
+    verified = 0
+    for s in signals_list:
+        if not isinstance(s, dict):
+            continue
+        
+        raw_id = str(s.get("article_id", "-1")).strip()
+        match = re.search(r'\d+', raw_id)
+        suggested_idx = int(match.group(0)) if match else -1
+
+        # Self-healing keyword matching
+        headline = s.get("headline", "")
+        # Find proper nouns (capitalized words except the first word of the headline)
+        original_words = re.findall(r'\b[A-Za-z0-9\.\-]+\b', headline)
+        proper_nouns = set()
+        for idx, w in enumerate(original_words):
+            if idx > 0 and w[0].isupper():
+                proper_nouns.add(w.lower())
+        
+        # Numbers are also treated as highly specific keywords
+        numbers = set(re.findall(r'\b\d+\b', headline))
+        high_weight_words = proper_nouns.union(numbers)
+
+        headline_words = set(re.findall(r'\b[a-z]{3,}\b', headline.lower()))
+        
+        # Exclude generic keywords that appear in almost all articles to prevent false-positive matches
+        IGNORE_WORDS = {
+            "japan", "japanese", "ai", "news", "policy", "government", "model",
+            "article", "report", "company", "tech", "system", "industry", "market",
+            "business", "introducing", "introduction", "introduce", "latest", "new"
+        }
+        specific_headline_words = headline_words - IGNORE_WORDS
+        high_weight_words = high_weight_words - IGNORE_WORDS
+
+        # Cross-lingual synonyms for common Japanese tech/gov terms to assist matching
+        JAPAN_SYNONYMS = {
+            "防衛": ["defense", "defence", "forces", "military", "sdf", "jsdf", "palantir"],
+            "自衛": ["defense", "defence", "forces", "military", "sdf", "jsdf"],
+            "経済産業省": ["meti", "ministry", "policy"],
+            "経産省": ["meti", "ministry", "policy"],
+            "政府": ["government", "policy"],
+            "導入": ["adopt", "adoption", "introduce", "introducing", "deployment"],
+            "開発": ["develop", "development", "build"],
+            "発表": ["announce", "announcement", "release"],
+            "提携": ["partner", "partnership", "alliance"],
+        }
+
+        def calculate_score(art: dict) -> int:
+            title_snippet = (art.get("title", "") + " " + art.get("snippet", "")).lower()
+            art_words = set(re.findall(r'\b[a-z]{3,}\b', title_snippet))
+            
+            # 1. Base specific overlap (weight=1)
+            score = len(specific_headline_words.intersection(art_words))
+            
+            # 2. Proper nouns / numbers overlap (weight=5)
+            high_weight_overlap = high_weight_words.intersection(art_words)
+            score += len(high_weight_overlap) * 5
+            
+            # 3. Cross-lingual synonym match (weight=3)
+            for jp_term, eng_syns in JAPAN_SYNONYMS.items():
+                if jp_term in title_snippet:
+                    if any(eng in specific_headline_words for eng in eng_syns):
+                        score += 3
+            return score
+
+        # Calculate scores for all articles first
+        scores = [calculate_score(art) for art in articles]
+        max_score = max(scores) if scores else 0
+        best_idx = scores.index(max_score) if max_score > 0 else -1
+        
+        real_url = ""
+        # 1. Try suggested index first if it's within range
+        if 0 <= suggested_idx < len(articles):
+            suggested_score = scores[suggested_idx]
+            # Trust the suggested ID only if its score is close (within 3 points) to the maximum score
+            if suggested_score > 0 and (max_score - suggested_score) <= 3:
+                real_url = articles[suggested_idx].get("url", "")
+                print(f"[route] Trusting LLM ID {suggested_idx} (score={suggested_score}, max={max_score})")
+
+        # 2. If suggested ID was wrong, missing, or had a significantly worse score, self-heal to best match
+        if not real_url and best_idx != -1:
+            suggested_score = scores[suggested_idx] if 0 <= suggested_idx < len(articles) else 0
+            real_url = articles[best_idx].get("url", "")
+            print(f"[route] Self-healed ID {raw_id} -> {best_idx} (score={max_score}, suggested_score={suggested_score}, headline={headline[:40]!r})")
+        elif not real_url and 0 <= suggested_idx < len(articles):
+            # Fallback
+            real_url = articles[suggested_idx].get("url", "")
+            print(f"[route] Fallback to suggested ID {suggested_idx}")
+
+        signal = {k: v for k, v in s.items() if k != "article_id"}
+        signal["source_url"] = real_url
+        resolved_signals.append(signal)
+        if real_url:
+            verified += 1
+
+    print(f"[route_by_gem_score] {verified}/{len(resolved_signals)} signals have verified URLs")
+
+    breaking_signals = [
+        s for s in resolved_signals
+        if s.get("breaking", False) is True and s.get("gem_score", 0) == 5
+    ]
+
+    delivery_mode = ctx.state.get("delivery_mode", "digest")
+
+    if delivery_mode == "monitor" and breaking_signals:
+        run_date = ctx.state.get("run_date", datetime.date.today().isoformat())
+        _telegram_post(_build_breaking_html(breaking_signals, run_date), label="breaking alert")
+
+    if hasattr(classified, "model_dump"):
+        classified_dict = classified.model_dump()
+    elif isinstance(classified, dict):
+        classified_dict = classified
+    else:
+        classified_dict = {}
+
+    classified_updated = {**classified_dict, "signals": resolved_signals}
+
+    yield Event(
+        output=node_input,
+        state={
+            "classified_signals": classified_updated,
+            "breaking_signals": breaking_signals,
+        },
+        route=delivery_mode,
+    )
+
+
+@node
+def monitor_finish(ctx: Context, node_input: Any):
+    """Monitor terminal node. No LLM. Console status only."""
+    breaking_signals = ctx.state.get("breaking_signals", [])
     run_date = ctx.state.get("run_date", datetime.date.today().isoformat())
 
-    signals = classified.get("signals", []) if isinstance(classified, dict) else []
-
-    # Deduplication: load yesterday's signals and filter out repeats
-    try:
-        yesterday = (
-            datetime.date.fromisoformat(run_date) - datetime.timedelta(days=1)
-        ).isoformat()
-        yesterday_path = os.path.join(".agents/memory", f"{yesterday}.json")
-        if os.path.exists(yesterday_path):
-            with open(yesterday_path, "r", encoding="utf-8") as f:
-                yesterday_data = json.load(f)
-            past_headlines = {
-                s.get("headline", "").lower().strip()
-                for s in yesterday_data.get("signals", [])
-            }
-            past_urls = {
-                s.get("source_url", "").strip()
-                for s in yesterday_data.get("signals", [])
-                if s.get("source_url", "").strip()
-            }
-            before_count = len(signals)
-            signals = [
-                s for s in signals
-                if s.get("headline", "").lower().strip() not in past_headlines
-                and s.get("source_url", "").strip() not in past_urls
-            ]
-            removed = before_count - len(signals)
-            if removed:
-                print(f"[dedup] Removed {removed} signals already seen yesterday.")
-    except Exception as e:
-        print(f"[dedup] Skipped deduplication: {e}")
-
-    digest_to_store = json.dumps({
-        "run_date": run_date,
-        "trigger": ctx.state.get("trigger", "scheduled"),
-        "signals": signals,
-    }, ensure_ascii=False)
-
-    write_result = write_digest_to_memory(
+    classified = ctx.state.get("classified_signals", {})
+    signals = _extract_signals(classified)
+    write_digest_to_memory(
         date_key=run_date,
-        digest=digest_to_store,
+        digest=json.dumps({"run_date": run_date, "delivery_mode": "monitor",
+                           "signals": signals}, ensure_ascii=False),
     )
 
-    formatted = ctx.state.get("formatted_digest", "")
-    yield Event(
-        data=f"{formatted}\n\n---\n_Digest stored: {write_result}_",
-        state={"stored": True},
+    if breaking_signals:
+        headlines = ", ".join(s.get("headline", "")[:60] for s in breaking_signals[:3])
+        console_msg = f"⚡ Breaking signal found: {headlines}"
+    else:
+        console_msg = "✅ Nothing important in the last 2 hours. Next scan coming."
+
+    print(f"[monitor] {console_msg}")
+    yield Event(output=console_msg, state={"stored": True})
+
+
+@node
+def store_and_finish(ctx: Context, node_input: Any):
+    """Store signals and deliver digest or Q&A answer."""
+    delivery_mode = ctx.state.get("delivery_mode", "digest")
+    run_date = ctx.state.get("run_date", datetime.date.today().isoformat())
+    classified = ctx.state.get("classified_signals", {})
+    signals = _extract_signals(classified)
+
+    write_digest_to_memory(
+        date_key=run_date,
+        digest=json.dumps({"run_date": run_date, "delivery_mode": delivery_mode,
+                           "signals": signals}, ensure_ascii=False),
     )
 
+    if delivery_mode == "digest":
+        executive_summary = ctx.state.get("executive_summary", "")
+        digest_html = _build_digest_html(signals, run_date, executive_summary)
+        print("\n" + digest_html)
+        _telegram_post(digest_html, label="daily digest")
+        yield Event(output=digest_html, state={"stored": True})
 
-def load_hitl_pending() -> str:
-    """Load signals saved before a HITL interrupt from the pending file.
-
-    Call this when ctx.state['classified_signals'] is empty after a
-    human-in-the-loop confirmation, to recover the signals that were
-    saved before the interrupt.
-
-    Returns:
-        JSON string with classified_signals dict, or empty dict if not found.
-    """
-    tmp_path = os.path.join(".agents/memory", "_hitl_pending.json")
-    try:
-        if os.path.exists(tmp_path):
-            with open(tmp_path, "r", encoding="utf-8") as f:
-                return f.read()
-        return json.dumps({})
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    elif delivery_mode == "query":
+        query_answer = ctx.state.get("query_answer", "")
+        if not query_answer or "no recent signals" in query_answer.lower():
+            query_answer = "No recent signals found for your query."
+        print(f"\n[Q&A] {query_answer}")
+        _telegram_post(query_answer, label="Q&A reply")
+        yield Event(output=query_answer, state={"stored": True})
 
 
 # ---------------------------------------------------------------------------
@@ -552,244 +743,116 @@ def load_hitl_pending() -> str:
 
 classifier = LlmAgent(
     name="classifier",
-    model="gemini-2.5-flash",  # switched from flash-lite due to 503 capacity issues
+    model="gemini-2.5-flash",
     output_key="classified_signals",
     output_schema=DigestSignals,
-    tools=[search_ai_news],
-    instruction="""You are a signal classifier for a PM AI Signal Tracker.
-Your job is to search for AI news and classify each item into strategic
-signals for product managers working on AI products in Japan.
+    instruction=f"""You are a signal classifier for a PM AI Signal Tracker.
 
-CRITICAL: You MUST always call search_ai_news at least once before
-producing output. Never respond with prose — always produce a
-DigestSignals JSON object with a 'signals' list.
-Never return an empty signals list if search results were found.
+TODAY'S DATE: {datetime.date.today().isoformat()}
 
-SCHEDULED RUN (ctx.state['trigger'] == 'scheduled'):
-Run ALL of these searches using search_ai_news, one at a time:
-1. "Japan AI policy METI 2026"
-2. "new AI model release Japan 2026"
-3. "AI enterprise deployment Japan manufacturing 2026"
-4. "AI company Japan partnership SoftBank OpenAI 2026"
-5. "AI research product disruption 2026"
+Read the news articles in ctx.state['raw_news']. Each article is formatted as:
+  [N] Article title
+      SNIPPET: snippet text
 
-ON-DEMAND RUN (ctx.state['trigger'] == 'on_demand'):
-The on_demand_router has already searched and its summary is available
-as your input context. Use that context PLUS call search_ai_news once
-with ctx.state['user_query'] for any additional fresh results.
-Classify everything relevant you find into signals.
+For each article that is relevant to a PM working on AI products in Japan:
+1. Output article_id: the N from [N] at the start of that article
+2. Copy the article title as the headline (translate Japanese [JA] titles to English)
+3. Add your analysis: japan_angle, so_what, strategic_signal
+4. Assign category and gem_score
 
----
+Select each relevant article once. Do not combine multiple articles into one signal.
+Do not invent headlines — use the actual article title.
 
-SIGNAL CATEGORIES — pick exactly one per news item:
+SIGNAL CATEGORIES:
+1. policy_sovereignty — METI directives, AI laws, government strategy
+2. model_capability_release — model launches from Japan-committed companies
+3. infrastructure_compute — DC builds, chip supply, cloud capacity in Japan
+4. enterprise_adoption — Japan deployments + global use cases as leading indicators
+5. competitive_moves — M&A, partnerships, Japan entity formation
+6. research_disruptor_radar — papers with concrete product implication
 
-1. policy_sovereignty
-   Laws, AI strategies, data residency rules, safety frameworks.
-   Japan filter: METI directives, AI Strategy Council, "AI Nippon" updates,
-   data localisation rulings, sovereign compute policy.
+GEM SCORING — use the FULL scale, most articles score 1-2:
+5 — Immediate Japan action required THIS WEEK. Max 2 per digest.
+4 — Strong Japan relevance, concrete action in 3-6 months. Max 3 per digest.
+3 — Indirect Japan relevance, worth tracking. Most news lands here.
+2 — Globally interesting but low Japan near-term impact. Very common.
+1 — Noise: no product implication, no Japan relevance. Very common.
 
-2. model_capability_release
-   New model launches, benchmark jumps, open-source releases.
-   Japan filter — BOTH lenses:
-   - COMMITMENT LENS: English-first is NOT noise if company has Japan
-     presence (OpenAI Japan, Anthropic Japan, Cohere, Google Japan,
-     Microsoft Azure Japan, AWS Japan). Their releases are gems.
-   - CAPABILITY LENS: Japanese-native models (NTT Tsuzumi, Fujitsu Kozuchi,
-     SoftBank AI, Sakana AI). Benchmark jumps in document processing,
-     reasoning, multimodal.
+BREAKING: true only if gem_score=5 AND published last 2 hours AND market-shifting.
 
-3. infrastructure_compute
-   Cloud expansions, chip supply chain, data centres, energy constraints.
-   Japan filter: AWS/Azure/Google DC builds in Japan, Rapidus semiconductor,
-   TSMC Kumamoto fab.
-
-4. enterprise_adoption
-   Who is deploying AI and with what outcome — anywhere in the world.
-   Japan filter — TWO lenses:
-   - DOMESTIC: Japanese enterprise deployments, Keidanren members.
-   - GLOBAL USE CASE SCOUTING: Proven deployments abroad in Japan's key
-     verticals (manufacturing, healthcare, retail, finance, public sector,
-     telco). A proven global use case = 12-18 month Japan leading indicator.
-     These are gems regardless of geography.
-
-5. competitive_moves
-   M&A, product launches, pricing, partnerships from major AI players.
-   Japan filter: SoftBank/OpenAI, NTT-Docomo AI, Sony AI, Rakuten AI.
-   Watch for foreign AI companies forming KK or GK entities in Japan.
-
-6. research_disruptor_radar
-   Papers, evals, safety findings — filtered by ONE question:
-   Does this create or destroy a product assumption, open a new use case,
-   or change who can build what?
-   Disruptor lens: capability jumps killing existing assumptions, methods
-   lowering barrier for local Japanese model building, safety findings in
-   regulated verticals (medical, financial).
-   Emerging use case lens: new product categories Japan will care about.
-
----
-
-GEM SCORING RUBRIC:
-5 — Immediate strategic relevance to Japan AI product decisions this week
-4 — Strong Japan relevance, actionable in 3-6 months
-3 — Indirect Japan relevance, worth tracking as trend
-2 — Globally interesting, low Japan near-term impact
-1 — Noise: no product implication, no Japan relevance
-
----
-
-FEW-SHOT EXAMPLES:
-
-Example 1:
-News: "Anthropic opens Tokyo office and announces Japanese enterprise support"
-Output signal:
-  category: competitive_moves
-  gem_score: 5
-  headline: Anthropic established a Tokyo office with dedicated Japanese enterprise support.
-  so_what: A top-3 frontier AI lab is now locally present in Japan, accelerating Claude adoption in Japanese enterprise.
-  japan_angle: Local presence enables Japanese companies to sign enterprise contracts with in-country support and compliance. Expect NDA-first Japanese enterprise deals to accelerate in 6-12 months.
-  strategic_signal: Watch for Anthropic Japan partnerships with Keidanren members in manufacturing and financial services.
-
-Example 2:
-News: "Stanford paper shows LLMs can process 10M token context reliably"
-Output signal:
-  category: research_disruptor_radar
-  gem_score: 4
-  headline: Stanford research demonstrates reliable 10M token context in LLMs.
-  so_what: This invalidates the assumption that enterprise document workflows require RAG pipelines.
-  japan_angle: Japanese enterprises run on document-heavy workflows (contracts, ringi approvals, regulatory filings). Long-context reliability opens direct AI product opportunities without complex RAG infrastructure.
-  strategic_signal: Watch for major model providers updating context window limits and RAG-based startups to pivot.
-
-Example 3:
-News: "OpenAI raises $5B in new funding round"
-Output signal:
-  category: competitive_moves
-  gem_score: 2
-  headline: OpenAI secured $5B in additional funding.
-  so_what: Extended runway may accelerate OpenAI's product roadmap and Japan market expansion.
-  japan_angle: No immediate Japan impact but sustained investment supports the SoftBank partnership and eventual Japanese enterprise feature prioritisation.
-  strategic_signal: Monitor for Japan-specific product or partnership announcements in the next quarter.
-
----
+JAPAN-COMMITTED COMPANIES (releases from these are gems):
+OpenAI Japan, Anthropic Japan, Google Japan, Microsoft Japan, AWS Japan,
+NTT, Fujitsu, SoftBank, Sony, Sakana AI, Preferred Networks, NEC, Hitachi,
+Toyota, Rakuten, NTT DATA, DeNA
 
 HARD RULES:
-- Output English only. Never output Japanese text in any field.
-- Never invent company names, partnerships, or facts not in search results.
-- Classify each unique news story only once. Skip duplicates.
-- Skip pure marketing press releases with no product or policy substance.
-- Never score gem 4-5 without a specific, concrete Japan implication.
-- RECENCY: Only classify news published in the last 24-48 hours.
-  Check the published_date field. Skip anything older than 2 days.
-  If no date is available, use your judgment — skip if it feels like old news.
-- MAX OUTPUT: Return at most 15 signals total. If you find more,
-  keep the highest gem-score ones and drop the rest.
+- Translate [JA] article titles to English in the headline field.
+- article_id must be the exact N from that article's [N] prefix.
+- Max 15 signals total.
+- Never score 4-5 without a concrete Japan implication.
+- Output gem 1-2 signals for background noise — do not skip them.
 """,
 )
 
 
-formatter = LlmAgent(
-    name="formatter",
+digest_formatter = LlmAgent(
+    name="digest_formatter",
     model="gemini-2.5-flash",
-    output_key="formatted_digest",
-    tools=[read_digests_from_memory, load_hitl_pending],
-    instruction=f"""You are the PM-lens formatter for the PM AI Signal Tracker.
+    output_key="executive_summary",
+    instruction=f"""You are the executive summary writer for PM AI Signal Tracker.
 
-TODAY'S DATE IS: {datetime.date.today().isoformat()}
-Always use this exact date in the digest header. Never use any date from
-article content, search results, or news snippets.
+TODAY'S DATE: {datetime.date.today().isoformat()}
 
-CRITICAL: Never ask the user for input. Never ask clarifying questions.
-Always produce a formatted digest. Follow this exact order:
-1. Check ctx.state['classified_signals'] — if it has signals, use them.
-2. If classified_signals is empty or missing, call load_hitl_pending() to
-   recover signals saved before the HITL interrupt.
-3. If still no signals, call read_digests_from_memory with today's date.
-4. Only say "No signals found today" if ALL three sources return nothing.
+Write a 2-3 sentence executive summary of today's AI signals from a Japan PM
+perspective. Focus on gem 4-5 signals. Reference specific companies and facts.
+Output ONLY the summary text. Max 60 words.
+""",
+)
 
-Your job is NOT to summarise the news. Make strategic implications
-visible and actionable for a PM working on AI products in Japan.
 
-TRIGGER TYPE is in ctx.state['trigger']:
-- 'scheduled': Produce the full daily digest using the format below.
-- 'on_demand': The user's question is in ctx.state['user_query'].
-  FIRST: Write a 2-3 sentence direct answer to the user's specific question.
-  THEN: Use read_digests_from_memory to check past signals.
-  THEN: Present only signals directly relevant to the question.
-  Do NOT produce a full digest — stay focused on what was asked.
+query_formatter = LlmAgent(
+    name="query_formatter",
+    model="gemini-2.5-flash",
+    output_key="query_answer",
+    tools=[read_digests_from_memory],
+    instruction=f"""You are the Q&A responder for PM AI Signal Tracker.
 
----
+TODAY'S DATE: {datetime.date.today().isoformat()}
 
-OUTPUT FORMAT:
+The user's question is in ctx.state['user_query'].
+Classified signals are in ctx.state['classified_signals'].
 
-## PM AI Signal Tracker — [DATE]
+If classified_signals is empty, call read_digests_from_memory.
+Only surface signals directly relevant to the question.
+If nothing relevant found, output: "No recent signals found for your query."
 
-### Executive Summary
-[2-3 sentences on the most important strategic theme across gem 4-5
-signals today. Reference specific companies or events — no vague trends.]
-
----
-
-### 🔴 Must-Read Signals (Gem 5)
-[All gem_score 5 signals using card format. If none, say "No Gem 5 signals today."]
-
-### 🟠 Watch Closely (Gem 4)
-[All gem_score 4 signals using card format]
-
-### 🟡 On the Radar (Gem 3)
-[All gem_score 3 signals using card format]
-
-### ⚪ Background Noise (Gem 1-2)
-[One-liner per signal — no full card]
-
----
-
-SIGNAL CARD FORMAT:
-
-**[EMOJI] [HEADLINE]**
-So what: [so_what]
-Japan angle: [japan_angle]
-Watch next: [strategic_signal]
-Source: [source_url]
-
-CATEGORY EMOJIS:
-🏛️ policy_sovereignty
-🧠 model_capability_release
-🏗️ infrastructure_compute
-🏢 enterprise_adoption
-⚔️ competitive_moves
-🔬 research_disruptor_radar
-
----
+OUTPUT FORMAT (short — goes to Telegram):
+Start with a natural lead-in like "The most relevant signal on [topic]:"
+then 2-3 sentences: key fact + Japan angle.
+Add 🔗 [url] only if source_url is a real URL starting with http. Otherwise omit.
 
 HARD RULES:
-- Output English only. Never output Japanese text.
-- Never invent signals not in ctx.state['classified_signals'].
-- Keep each signal card under 80 words (excluding source).
-- For on_demand queries, lead with a direct answer before signals.
-- MAX SIGNALS: Show at most 3 gem-5, 3 gem-4, 3 gem-3, 5 gem-1/2 signals.
-  If more exist, pick the most Japan-relevant ones and drop the rest.
-- Total digest should be readable in 5 minutes — trim ruthlessly.
+- Max 100 words. No repetition. No gem tier listing.
+- Never surface unrelated signals as fallback.
+- English only.
 """,
 )
 
 
 on_demand_router = LlmAgent(
     name="on_demand_router",
-    model="gemini-2.5-flash",  # switched from flash-lite for reliability
+    model="gemini-2.5-flash",
     output_key="routed_query",
     tools=[read_digests_from_memory, search_ai_news],
-    instruction="""You are a retrieval tool for the PM AI Signal Tracker.
+    instruction="""You are a retrieval tool for PM AI Signal Tracker.
 
-NEVER ask the user any questions. NEVER say "What are you looking for?"
-NEVER engage in conversation. Just retrieve and summarise.
+NEVER ask the user questions. Just retrieve.
 
-The user's query is in ctx.state['user_query']. Always do both:
-1. Call read_digests_from_memory with the query to check past signals
-2. Call search_ai_news with the query to fetch fresh results
+The user's question is in ctx.state['user_query']. Always:
+1. Call read_digests_from_memory to check past signals
+2. Call search_ai_news with the most relevant query
 
-Then write a brief summary of what you found. That is all.
-
-If ctx.state['user_query'] is empty or unclear, search for
-"Japan AI news today" as the default query.
+Write a brief summary of what you found. That is all.
 """,
 )
 
@@ -801,34 +864,32 @@ If ctx.state['user_query'] is empty or unclear, search for
 root_workflow = Workflow(
     name="pm_ai_signal_tracker",
     edges=[
-        # Entry point
         ("START", detect_trigger),
 
-        # Trigger routing — covers all cases explicitly
         (detect_trigger, {
-            "scheduled": prepare_digest_queries,
-            "on_demand": on_demand_router,
+            "scan": prepare_digest_queries,
+            "query": on_demand_router,
         }),
+
+        # Scheduled path: searches → classifier → route
         (prepare_digest_queries, classifier),
 
-        # On-demand path bridge
+        # Query path: router → live search → classifier → route
         (on_demand_router, after_on_demand_router),
-        (after_on_demand_router, {
-            "to_classifier": classifier,
-        }),
+        (after_on_demand_router, {"to_classifier": classifier}),
 
-        # Both paths converge at route_by_gem_score
+        # Both paths merge at classifier → route_by_gem_score
         (classifier, route_by_gem_score),
 
-        # HITL gate — covers all cases explicitly
+        # Three-way split by delivery_mode
         (route_by_gem_score, {
-            "human_review": build_hitl_prompt,
-            "format_output": formatter,
+            "digest": digest_formatter,
+            "monitor": monitor_finish,
+            "query": query_formatter,
         }),
-        (build_hitl_prompt, formatter),
 
-        # Formatter -> store -> END
-        (formatter, store_and_finish),
+        (digest_formatter, store_and_finish),
+        (query_formatter, store_and_finish),
     ],
 )
 
