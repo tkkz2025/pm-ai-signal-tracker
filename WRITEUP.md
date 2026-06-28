@@ -16,14 +16,12 @@ Existing tools answer "what happened?" I need "so what for my product decisions 
 
 A three-mode agent built on the Agent Development Kit (ADK) that delivers a scheduled daily AI news digest, alerts on breaking events, and handles on-demand queries. 
 
-All user interactions happen via the Telegram bot called **AI PM Signal Tracker**, which communicates asynchronously with our FastAPI server using Google Cloud Pub/Sub message envelopes.
-
-The three-mode design is tightly integrated: the scheduled digest filters and logs daily insights, the background monitor flags high-urgency breaking news, and the on-demand query mode lets users query this accumulated historical memory to answer retrospective questions like "how has OpenAI's Japan strategy shifted this month?" The tool gets smarter and more valuable over time.
+All user interactions happen via the Telegram bot called **AI PM Signal Tracker**, which communicates with our FastAPI backend. The three-mode design is tightly integrated: the scheduled digest logs daily insights, the background monitor flags high-urgency breaking news, and the on-demand Q&A mode lets users query this accumulated historical memory alongside live web searches. The tool gets more valuable over time.
 
 Every news item is classified into one of six strategic categories, scored 1–5 on Japan strategic relevance (gem score), and output with an explicit Japan angle and strategic signal.
 
 **Three Operating Modes:**
-1. **`digest`** (daily at 9am JST) — Aggregates and translates the last 24h AI news into a structured HTML message pushed via Pub/Sub to the Telegram bot. To prevent notification fatigue, the digest uses a prioritized layout (Red Tier "Must-Read Gem 5" for high-impact items, Orange Tier "Watch Closely Gem 4", and Yellow Tier "On the Radar Gem 3" for headlines) allowing PMs to scan the landscape in under 30 seconds.
+1. **`digest`** (daily at 9am JST) — Aggregates and translates the last 24h AI news into a structured HTML message sent to the Telegram bot. To prevent notification fatigue, the digest uses a prioritized layout (Red Tier "Must-Read Gem 5" for high-impact items, Orange Tier "Watch Closely Gem 4", and Yellow Tier "On the Radar Gem 3" for headlines) allowing PMs to scan the landscape in under 30 seconds.
 2. **`monitor`** (every 3h background scan) — Evaluates recent news and triggers a proactive alert *only* if a highly critical, market-shifting breaking event (`breaking=True`) is discovered.
 3. **`query`** (on-demand Q&A) — Answers natural language user queries directly in Telegram by retrieving historical context from memory and executing a clean, time-limit-free general web search.
 
@@ -39,7 +37,7 @@ While Slack and Line dominate internal corporate chat in Japan, we selected Tele
 
 ## Value & User Impact
 
-* **100% Trusted Links:** The self-healing URL resolver prevents LLM link hallucinations, meaning PMs can click news sources with complete confidence.
+* **100% Trusted Links:** Click news sources with complete confidence. The self-healing URL resolver verifies headlines against search results, completely preventing LLM link hallucinations.
 * **No Redundant Reading:** The title deduplicator filters out duplicate news coverage across feeds, ensuring PMs only review unique signals instead of reading the same story three times.
 * **Retrospective Context:** Because daily digests persist in memory, on-demand queries combine live web searches with historical memory logs. This allows PMs to cross-reference fresh news with past signals (e.g., matching a new announcement against past local initiatives saved in memory).
 * **Privacy Guardrails:** The pre-execution search filters block prompt injections and corporate PII from leaking to external search engine APIs.
