@@ -873,7 +873,7 @@ Classified signals are in ctx.state['classified_signals'].
 
 If classified_signals is empty, call read_digests_from_memory.
 Only surface signals directly relevant to the question.
-If nothing relevant found, output: "No recent signals found for your query."
+If the query is conversational, generic, or has no relevant signals in the retrieved search results or memory, you MUST output exactly: "No recent signals found for your query."
 
 OUTPUT FORMAT (short — goes to Telegram):
 Start with a natural lead-in like "The most relevant signal on [topic]:"
@@ -882,7 +882,7 @@ Add 🔗 [url] only if source_url is a real URL starting with http. Otherwise om
 
 HARD RULES:
 - Max 100 words. No repetition. No gem tier listing.
-- Never surface unrelated signals as fallback.
+- Never surface unrelated signals as fallback. If the user query is unrelated to AI product news (e.g. asking for a joke, asking to write code, general hello/greeting), output: "No recent signals found for your query."
 - English only.
 """,
 )
