@@ -35,6 +35,23 @@ Every news item is classified into one of six strategic categories, scored 1–5
 
 ---
 
+## Why Telegram?
+
+We chose Telegram as our primary delivery channel for two reasons:
+* **Native Cross-Platform Accessibility:** Telegram is a widely adopted messenger that works seamlessly across mobile, desktop, and web, making it easy to check updates on any device.
+* **Built for News & Broadcasting:** Telegram is exceptionally well-suited for news digests and broadcast streams due to its native channel architecture, providing a clean, distraction-free environment for PMs to scan insights.
+
+---
+
+## Value & User Impact
+
+* **100% Trusted Links:** The self-healing URL resolver prevents LLM link hallucinations, meaning PMs can click news sources with complete confidence.
+* **No Redundant Reading:** The title deduplicator filters out duplicate news coverage across feeds, ensuring PMs only review unique signals instead of reading the same story three times.
+* **Retrospective Search:** Because memory persists across sessions, the Telegram bot acts as a searchable intelligence database of Japan's AI signal history over time, not just a temporary alert feed.
+* **Privacy Guardrails:** The pre-execution search filters block prompt injections and corporate PII from leaking to external search engine APIs.
+
+---
+
 ## What Makes It Different
 
 Four design decisions reflect real PM work in Japan that a generic agent would miss:
@@ -68,5 +85,5 @@ Four design decisions reflect real PM work in Japan that a generic agent would m
 * **Progressive Disclosure:** Applied ADK Agent Skills to dynamically load Japanese market context only when processing signals, optimizing prompt efficiency.
 * **Asynchronous Pub/Sub Integration:** Connected the user-facing Telegram bot asynchronously with the FastAPI application server using Pub/Sub message envelopes.
 * **Security & Execution Gates:** Deployed pre-execution script hooks (`hooks.json`) to validate queries and block prompt injections and private identifiers before they reach public search engine APIs.
-* **Deterministic Code Validation:** Interleaved LLM nodes with programmatic Python nodes to verify, deduplicate, and self-heal outputs (like source URL mappings) directly in code.
+* **Deterministic Code Validation:** Interleaved LLM nodes with programmatic Python nodes to verify, deduplicate, and self-heals outputs (like source URL mappings) directly in code.
 * **Rigorous Evaluation Metrics:** Created a local unit test suite and a 12-case LLM-as-a-judge dataset to grade the agent on domain classification and safety.
