@@ -4,7 +4,9 @@
 
 I work as a PM on AI products in Japan. Every day I face the same problem: too much AI news, most of it noise for my context, and the small fraction that matters requires significant domain knowledge to interpret correctly.
 
-Japan has a structural tension that makes this harder than it sounds. The government is pushing hard for AI adoption — Japan's Ministry of Economy, Trade and Industry (METI) AI Strategy, the AI Nippon initiative, SoftBank's OpenAI partnership. But enterprise adoption is slow due to slow consensus-driven approval culture, risk aversion, and lifetime employment norms. A PM in this market needs to track both: where government is pulling the market, and where enterprise inertia is the real constraint.
+Japan has a structural tension that makes this harder than it sounds. The government is pushing hard for AI adoption — Japan's Ministry of Economy, Trade and Industry (METI) AI Strategy, the AI Nippon initiative, SoftBank's OpenAI partnership. But enterprise adoption is slow due to slow consensus-driven approval culture, risk aversion, and lifetime employment norms. 
+
+Because global frontier LLMs evolve week-by-week, a 12-18 month enterprise approval delay means Japanese companies risk building on obsolete model assumptions. A PM must track these signals in real-time to avoid lock-in to technical debt before project approval is even signed off.
 
 Existing tools answer "what happened?" I need "so what for my product decisions in Japan?"
 
@@ -21,7 +23,7 @@ The three-mode design is tightly integrated: the scheduled digest filters and lo
 Every news item is classified into one of six strategic categories, scored 1–5 on Japan strategic relevance (gem score), and output with an explicit Japan angle and strategic signal.
 
 **Three Operating Modes:**
-1. **`digest`** (daily at 9am JST) — Aggregates and translates the last 24h AI news into a single structured HTML message pushed via Pub/Sub to the Telegram bot.
+1. **`digest`** (daily at 9am JST) — Aggregates and translates the last 24h AI news into a structured HTML message pushed via Pub/Sub to the Telegram bot. To prevent notification fatigue, the digest uses a prioritized layout (Red Tier "Must-Read Gem 5" for high-impact items, Orange Tier "Watch Closely Gem 4", and Yellow Tier "On the Radar Gem 3" for headlines) allowing PMs to scan the landscape in under 30 seconds.
 2. **`monitor`** (every 3h background scan) — Evaluates recent news and triggers a proactive alert *only* if a highly critical, market-shifting breaking event (`breaking=True`) is discovered.
 3. **`query`** (on-demand Q&A) — Answers natural language user queries directly in Telegram by retrieving historical context from memory and executing a clean, time-limit-free general web search.
 
@@ -29,9 +31,9 @@ Every news item is classified into one of six strategic categories, scored 1–5
 
 ## Why Telegram?
 
-We chose Telegram as our primary delivery channel for two reasons:
-* **Native Cross-Platform Accessibility:** Telegram is a widely adopted messenger that works seamlessly across mobile, desktop, and web, making it easy to check updates on any device.
-* **Built for News & Broadcasting:** Telegram is exceptionally well-suited for news digests and broadcast streams due to its native channel architecture, providing a clean, distraction-free environment for PMs to scan insights.
+While Slack and Line dominate internal corporate chat in Japan, we selected Telegram for two product-led reasons:
+* **Frictionless Bot Interaction:** Unlike Slack, which requires admin approvals to install enterprise apps, any PM can search for our Telegram bot and start interacting instantly.
+* **Native Rich Formatting & Broadcasting:** Telegram provides a native, cross-platform broadcasting interface with a robust HTML parsing engine, allowing us to deliver dense, color-coded visual tiers directly to a PM's mobile device.
 
 ---
 
@@ -39,7 +41,7 @@ We chose Telegram as our primary delivery channel for two reasons:
 
 * **100% Trusted Links:** The self-healing URL resolver prevents LLM link hallucinations, meaning PMs can click news sources with complete confidence.
 * **No Redundant Reading:** The title deduplicator filters out duplicate news coverage across feeds, ensuring PMs only review unique signals instead of reading the same story three times.
-* **Retrospective Search:** Because memory persists across sessions, the Telegram bot acts as a searchable database of Japan's AI signal history over time, not just a temporary alert feed.
+* **Retrospective Analysis:** Because memory persists across sessions, PMs preparing competitive analysis decks or METI funding proposals can query the bot (e.g., "Sakana AI Fugu releases") to instantly retrieve an aggregated timeline of past events.
 * **Privacy Guardrails:** The pre-execution search filters block prompt injections and corporate PII from leaking to external search engine APIs.
 
 ---
@@ -63,6 +65,6 @@ Four design decisions reflect real PM work in Japan that a generic agent would m
 * **State & Workflow Orchestration:** Uses ADK 2.0 conditional routing to orchestrate distinct classification, formatting, and retrieval steps based on user triggers.
 * **Persistent Memory:** Persists structured digests in long-term memory so Q&A queries can perform retrospective analysis over past weeks.
 * **Asynchronous Pub/Sub Integration:** Connects the Telegram interface with the FastAPI server asynchronously using Pub/Sub message envelopes.
-* **Pre-Execution Security Hooks:** Blocks prompt injections and personal identifiers in queries before they are sent to third-party search APIs.
+* **Hybrid Security Model:** Combines ADK's pre-execution hook scripts (interrogating LLM tool calls) with direct Python-level validation filters inside our on-demand query node. This ensures prompt injections and PII leaks are blocked across both agent-driven and code-driven search paths.
 * **Bilingual Search & Self-Healing Links:** Aggregates Japanese and English searches, deduplicates identical news coverage, and programmatically verifies and repairs URL links in Python.
 * **Rigorous Domain Grading:** Grades the agent using unit tests and an LLM-as-a-judge dataset representing realistic PM scenarios.
