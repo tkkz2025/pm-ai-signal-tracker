@@ -63,10 +63,10 @@ Four design decisions reflect real PM work in Japan that a generic agent would m
 
 ## Course Concepts Applied
 
-* **Structured State & Workflows:** Built a conditional routing DAG utilizing specialized agents for classification, routing, and formatting.
-* **Persistent Memory:** Utilized file-based memory to store daily digests, allowing the Q&A agent to retrieve past context across sessions.
-* **Progressive Disclosure:** Incorporated dynamic context loading (Japan reference skills) only when processing signals to keep the LLM focused.
-* **Asynchronous Integration:** Integrated the Telegram bot asynchronously with a FastAPI backend using Google Cloud Pub/Sub envelopes.
-* **Security & PII Filters:** Deployed pre-execution script gates (required by course safety guidelines) to sanitize queries and block personal identifiers (like emails) before they are sent to public search engine APIs.
-* **Rigorous Evaluation:** Used a local unit testing suite paired with an LLM-as-a-judge dataset of 12 custom scenarios to ensure quality across modes.
-* **Self-Healing Python Nodes:** Replaced brittle HITL (Human-in-the-loop) prompts with programmatically assisted LLM decision-making that validates and heals links automatically.
+* **State & Workflow Orchestration:** Built a conditional routing DAG using the ADK 2.0 framework, leveraging context state transitions to orchestrate specialized classification and formatting agents.
+* **Persistent Long-Term Memory:** Utilized file-based memory stores to persist structured daily digests, enabling cross-session query retrieval and retrospective analysis.
+* **Progressive Disclosure:** Applied ADK Agent Skills to dynamically load Japanese market context only when processing signals, optimizing prompt efficiency.
+* **Asynchronous Pub/Sub Integration:** Connected the user-facing Telegram bot asynchronously with the FastAPI application server using Pub/Sub message envelopes.
+* **Security & Execution Gates:** Deployed pre-execution script hooks (`hooks.json`) to validate queries and block prompt injections and private identifiers before they reach public search engine APIs.
+* **Deterministic Code Validation:** Interleaved LLM nodes with programmatic Python nodes to verify, deduplicate, and self-heal outputs (like source URL mappings) directly in code.
+* **Rigorous Evaluation Metrics:** Created a local unit test suite and a 12-case LLM-as-a-judge dataset to grade the agent on domain classification and safety.
