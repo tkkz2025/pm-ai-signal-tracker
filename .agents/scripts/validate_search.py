@@ -10,10 +10,10 @@ import sys
 
 INJECTION_PATTERNS = [
     r"ignore\s+previous",
-    r"ignore\s+all\s+instructions",
+    r"ignore\s+(?:all\s+)?instructions?",
     r"system\s+prompt",
     r"jailbreak",
-    r"disregard",
+    r"disregard\s+instructions?",
     r"act\s+as\s+if",
     r"pretend\s+you",
     r"<script",

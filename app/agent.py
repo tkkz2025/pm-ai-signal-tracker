@@ -518,7 +518,16 @@ def after_on_demand_router(ctx: Context, node_input: Any):
         r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",                       # phone
     ]
     INJECTION_PATTERNS = [
-        r"ignore\s+previous", r"system\s+prompt", r"jailbreak"
+        r"ignore\s+previous",
+        r"ignore\s+(?:all\s+)?instructions?",
+        r"system\s+prompt",
+        r"jailbreak",
+        r"disregard\s+instructions?",
+        r"act\s+as\s+if",
+        r"pretend\s+you",
+        r"<script",
+        r"DROP\s+TABLE",
+        r"rm\s+-rf",
     ]
     
     # Block immediately if query violates safety patterns
