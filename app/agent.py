@@ -492,7 +492,9 @@ def prepare_digest_queries(ctx: Context, node_input: Any):
 def _clean_query_for_search(query: str) -> str:
     """Strip conversational phrasing and question marks to get clean search keywords."""
     q = query.lower().strip()
-    q = re.sub(r'[?!\.\,\:\;\"]', '', q)
+    # Strip question marks and punctuation, but keep internal periods for domains/emails
+    q = re.sub(r'[?!\,\:\;\"]', '', q)
+    q = q.rstrip('.')
     prefixes = [
         "how about", "what about", "tell me about", "do you know about",
         "can you tell me about", "what is", "who is", "information on",
@@ -509,6 +511,44 @@ def after_on_demand_router(ctx: Context, node_input: Any):
     """Run live search for the user's query, format with [N] IDs, store url_lookup."""
     user_query = ctx.state.get("user_query", str(node_input))
     routed = ctx.state.get("routed_query", "")
+
+    # Python-level Data Leakage Prevention (DLP) guardrail before query runs
+    PII_PATTERNS = [
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",  # email
+        r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",                       # phone
+    ]
+    INJECTION_PATTERNS = [
+        r"ignore\s+previous", r"system\s+prompt", r"jailbreak"
+    ]
+    
+    # Block immediately if query violates safety patterns
+    for pattern in PII_PATTERNS:
+        if re.search(pattern, user_query, re.IGNORECASE):
+            print(f"[safety] BLOCKED: PII detected in user query: {user_query}")
+            yield Event(
+                output="Blocked: PII detected in query.",
+                state={
+                    "raw_news": "Blocked: PII detected in query.",
+                    "raw_news_json": "[]",
+                    "url_lookup": "{}",
+                },
+                route="to_classifier"
+            )
+            return
+
+    for pattern in INJECTION_PATTERNS:
+        if re.search(pattern, user_query, re.IGNORECASE):
+            print(f"[safety] BLOCKED: Injection detected in user query: {user_query}")
+            yield Event(
+                output="Blocked: Prompt injection detected.",
+                state={
+                    "raw_news": "Blocked: Prompt injection detected.",
+                    "raw_news_json": "[]",
+                    "url_lookup": "{}",
+                },
+                route="to_classifier"
+            )
+            return
 
     cleaned_query = _clean_query_for_search(user_query)
     print(f"[on_demand] Searching live for: {cleaned_query}")
