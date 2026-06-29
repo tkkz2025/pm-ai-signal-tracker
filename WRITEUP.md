@@ -62,7 +62,7 @@ Four design decisions reflect real PM work in Japan that a generic agent would m
 
 * **State & Workflow DAGs (ADK 2.0):** Built a multi-mode conditional routing workflow using ADK 2.0 context state and routing rules.
 * **Asynchronous Triggers (Pub/Sub):** Connected the Telegram bot asynchronously to the FastAPI backend using Pub/Sub message envelopes to handle user queries.
-* **Persistent Memory (Day 3):** Deployed a file-based storage layer to persist structured digests, enabling cross-session retrieval and Q&A memory context lookup.
-* **Progressive Disclosure via Agent Skills (Day 3):** Packaged Japan-specific policy and vertical rules as a dynamic Agent Skill, preventing context window rot during processing.
-* **Security Hook Gates (Day 4):** Configured `hooks.json` pre-execution script hooks to validate search inputs and abort unsafe API tool calls.
-* **LLM-as-a-Judge Evaluation (Day 4):** Created a 12-case evaluation dataset and judge instructions to grade the agent on taxonomy classification and security.
+* **Persistent Long-Term Memory:** Deployed a file-based storage layer to persist structured digests, enabling cross-session retrieval and Q&A memory context lookup.
+* **Progressive Disclosure via Agent Skills:** Packaged Japan-specific policy and vertical rules as a dynamic Agent Skill, preventing context window rot during processing.
+* **Security Hook Gates:** Configured `hooks.json` pre-execution script hooks to validate search inputs and abort unsafe API tool calls.
+* **LLM-as-a-Judge Evaluation:** Created a 12-case evaluation dataset and judge instructions to grade the agent on taxonomy classification and security.
