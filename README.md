@@ -1,4 +1,4 @@
-# PM AI Signal Tracker
+# AI PM Signal Tracker
 
 > A three-mode ADK 2.0 agent that delivers a daily AI news digest, alerts on breaking events, and answers on-demand questions—all filtered through a Japan PM lens to translate global AI news into strategic product decisions.
 
